@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::instructions::Instruction;
+use crate::{
+    descriptor::TermDescriptor,
+    instructions::{DescriptorId, Instruction},
+};
 
 #[derive(Clone, Debug)]
 pub struct Interpreter {
@@ -11,12 +14,7 @@ pub struct Interpreter {
     pub mode: Mode,
     pub next_sub_term_address: usize,
     pub execution_state: ExecutionState,
-    functor_descriptions: Vec<FunctorDescription>,
-}
-
-#[derive(Clone, Debug)]
-pub struct FunctorDescription {
-    pub arity: usize,
+    descriptors: Vec<TermDescriptor>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,7 +47,7 @@ impl CellAddress {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cell {
     StructureRef(usize),
-    Structure(usize),
+    Structure(DescriptorId),
     Reference(usize),
     Undefined,
 }
@@ -58,7 +56,7 @@ impl Interpreter {
     pub fn new(
         instructions: Vec<Instruction>,
         registers: usize,
-        functor_descriptions: Vec<FunctorDescription>,
+        descriptors: Vec<TermDescriptor>,
     ) -> Self {
         Self {
             global_stack: Vec::with_capacity(1024),
@@ -67,7 +65,7 @@ impl Interpreter {
             execution_state: ExecutionState::Normal,
             mode: Mode::Write,
             next_sub_term_address: 0,
-            functor_descriptions,
+            descriptors,
             instructions,
         }
     }
@@ -86,8 +84,27 @@ impl Interpreter {
         }
     }
 
-    fn bind_address(&mut self, address: CellAddress, address_value: usize) {
-        *self.lookup_address_mut(address) = Cell::Reference(address_value);
+    fn bind_address(&mut self, a: CellAddress, b: CellAddress) {
+        let a_value = self.lookup_address(a);
+        let b_value = self.lookup_address(b);
+
+        match (a_value, b_value) {
+            (Cell::Reference(a_ref), Cell::Reference(b_ref)) if a_ref < b_ref => {
+                let new_value = b_value.clone();
+                let a_value_mut = self.lookup_address_mut(a);
+                *a_value_mut = new_value;
+            }
+            (Cell::Reference(_), _) => {
+                let new_value = b_value.clone();
+                let a_value_mut = self.lookup_address_mut(a);
+                *a_value_mut = new_value;
+            }
+            _ => {
+                let new_value = a_value.clone();
+                let b_value_mut = self.lookup_address_mut(b);
+                *b_value_mut = new_value;
+            }
+        }
     }
 
     fn deref_cell(&self, address: CellAddress) -> CellAddress {
@@ -109,17 +126,18 @@ impl Interpreter {
         working_stack.push_back(b);
 
         while let (Some(a), Some(b)) = (working_stack.pop_back(), working_stack.pop_back()) {
-            let a = self.deref_cell(a);
-            let b = self.deref_cell(b);
+            let a_address = self.deref_cell(a);
+            let b_address = self.deref_cell(b);
             if a == b {
                 continue;
             }
 
-            let a = self.lookup_address(a);
-            let b = self.lookup_address(b);
+            let a = self.lookup_address(a_address);
+            let b = self.lookup_address(b_address);
+
             match (a, b) {
-                (Cell::Reference(a_ref), Cell::Reference(b_ref)) => {
-                    self.bind_address(CellAddress::GlobalStack { index: *a_ref }, *b_ref);
+                (Cell::Reference(_), _) | (_, Cell::Reference(_)) => {
+                    self.bind_address(a_address, b_address);
                 }
                 (Cell::StructureRef(a_ref), Cell::StructureRef(b_ref)) => {
                     let structure_a =
@@ -130,24 +148,26 @@ impl Interpreter {
                     match (structure_a, structure_b) {
                         (Cell::Structure(structure_a), Cell::Structure(structure_b)) => {
                             if *structure_a == *structure_b {
-                                let functor_description = &self.functor_descriptions[*structure_a];
-                                for i in 1..functor_description.arity {
+                                let functor_description = &self.descriptors[structure_a.0];
+                                for i in 1..functor_description.arity() {
                                     working_stack
                                         .push_back(CellAddress::GlobalStack { index: a_ref + i });
                                     working_stack
                                         .push_back(CellAddress::GlobalStack { index: b_ref + i });
                                 }
-                            } else {
-                                self.execution_state = ExecutionState::Failure;
-                                break;
+                                continue;
                             }
                         }
-                        _ => panic!(
-                            "Unexpected execution assumption mismatch, STR referenced NOT a structure."
-                        ),
+                        _ => {}
                     }
+
+                    self.execution_state = ExecutionState::Failure;
+                    break;
                 }
-                _ => {}
+                _ => {
+                    self.execution_state = ExecutionState::Failure;
+                    break;
+                }
             }
         }
     }
@@ -170,16 +190,16 @@ impl Interpreter {
             } => {
                 self.global_stack
                     .push(Cell::StructureRef(self.global_stack.len() + 1));
-                self.global_stack.push(Cell::Structure(structure.0));
-                self.registers[*register] = Cell::StructureRef(self.global_stack.len() - 1);
+                self.global_stack.push(Cell::Structure(*structure));
+                self.registers[register.0] = Cell::StructureRef(self.global_stack.len() - 1);
             }
             Instruction::SetVariable { register } => {
                 self.global_stack
                     .push(Cell::Reference(self.global_stack.len()));
-                self.registers[*register] = Cell::Reference(self.global_stack.len() - 1);
+                self.registers[register.0] = Cell::Reference(self.global_stack.len() - 1);
             }
             Instruction::SetValue { register } => {
-                let value = self.registers[*register].clone();
+                let value = self.registers[register.0].clone();
                 self.global_stack.push(value);
             }
             // Debug instructions --------------------------------------------
@@ -189,21 +209,26 @@ impl Interpreter {
                 structure,
                 register,
             } => {
-                let address = self.deref_cell(CellAddress::Register { index: *register });
+                let address = self.deref_cell(CellAddress::Register { index: register.0 });
                 let value = self.lookup_address(address);
                 match value {
                     Cell::Reference(reference_index) => {
                         self.global_stack
                             .push(Cell::StructureRef(self.global_stack.len() + 1));
-                        self.global_stack.push(Cell::Structure(structure.0));
-                        self.bind_address(address, self.global_stack.len() - 2);
+                        self.global_stack.push(Cell::Structure(*structure));
+                        self.bind_address(
+                            address,
+                            CellAddress::GlobalStack {
+                                index: self.global_stack.len() - 2,
+                            },
+                        );
                         self.mode = Mode::Write;
                     }
                     Cell::StructureRef(structure_addr) => {
                         let target_structure = self.lookup_address(CellAddress::GlobalStack {
                             index: *structure_addr,
                         });
-                        if target_structure == &Cell::Structure(structure.0) {
+                        if target_structure == &Cell::Structure(*structure) {
                             self.next_sub_term_address = structure_addr + 1;
                             self.mode = Mode::Read;
                         } else {
@@ -223,13 +248,13 @@ impl Interpreter {
                             .clone();
 
                         let register =
-                            self.lookup_address_mut(CellAddress::Register { index: *register });
+                            self.lookup_address_mut(CellAddress::Register { index: register.0 });
                         *register = next_sub_term_value;
                     }
                     Mode::Write => {
                         let new_value = Cell::Reference(self.global_stack.len());
                         self.global_stack.push(new_value.clone());
-                        *self.lookup_address_mut(CellAddress::Register { index: *register }) =
+                        *self.lookup_address_mut(CellAddress::Register { index: register.0 }) =
                             new_value;
                     }
                 }
@@ -239,7 +264,7 @@ impl Interpreter {
                 match self.mode {
                     Mode::Read => {
                         self.unify(
-                            CellAddress::Register { index: *register },
+                            CellAddress::Register { index: register.0 },
                             CellAddress::GlobalStack {
                                 index: self.next_sub_term_address,
                             },
@@ -247,7 +272,7 @@ impl Interpreter {
                     }
                     Mode::Write => {
                         let register =
-                            self.lookup_address(CellAddress::Register { index: *register });
+                            self.lookup_address(CellAddress::Register { index: register.0 });
                         self.global_stack.push(register.clone());
                     }
                 }

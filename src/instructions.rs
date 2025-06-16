@@ -1,31 +1,34 @@
-#[derive(Debug, Clone)]
-pub struct StructureRef(pub usize);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
+pub struct DescriptorId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegisterId(pub usize);
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
     // Query instructions ----------------------------
     PutStructure {
-        structure: StructureRef,
-        register: usize,
+        structure: DescriptorId,
+        register: RegisterId,
     },
     SetVariable {
-        register: usize,
+        register: RegisterId,
     },
     SetValue {
-        register: usize,
+        register: RegisterId,
     },
     DebugComment {
         message: Box<String>,
     },
     // Program instructions ----------------------------
     GetStructure {
-        structure: StructureRef,
-        register: usize,
+        structure: DescriptorId,
+        register: RegisterId,
     },
     UnifyVariable {
-        register: usize,
+        register: RegisterId,
     },
     UnifyValue {
-        register: usize,
+        register: RegisterId,
     },
 }

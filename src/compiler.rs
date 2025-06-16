@@ -1,398 +1,168 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
-    instructions::{Instruction, StructureRef},
-    interpreter::FunctorDescription,
+    descriptor::{DescriptorAllocator, TermDescriptor},
+    instructions::{DescriptorId, Instruction, RegisterId},
     parsing::AbstractTerm,
+    traversal::{BreadthFirstIterator, PostOrderIterator},
 };
 
-#[derive(Debug, Clone, Default)]
-pub struct Compiler;
+pub trait CompileTarget<'a> {
+    type OrderedIterator: Iterator<Item = &'a AbstractTerm>;
 
-pub struct CompiledQuery {
-    pub instructions: Vec<Instruction>,
-    pub register_allocator: RegisterAllocator,
+    fn get_ordered_iterator(root: &'a AbstractTerm) -> Self::OrderedIterator;
+
+    fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction;
+    fn instruction_for_value(register: RegisterId) -> Instruction;
+    fn instruction_for_variable(register: RegisterId) -> Instruction;
+
+    fn instruction_for_debug_preamble() -> Instruction;
 }
 
-pub struct CompiledProgram {
-    pub register_allocator: RegisterAllocator,
-    pub instructions: Vec<Instruction>,
+struct RegistryAllocator {
+    registry_map: HashMap<DescriptorId, RegisterId>,
+    registry_ordered_list: Vec<DescriptorId>,
 }
 
-trait CompileTarget {}
+impl RegistryAllocator {
+    pub fn new(term: &AbstractTerm, descriptor_allocator: &mut DescriptorAllocator) -> Self {
+        let mut registry_map = HashMap::new();
+        let mut registry_ordered_list = Vec::new();
 
-struct QueryTarget;
-struct ProgramTarget;
+        let iter = BreadthFirstIterator::new(term);
 
-#[derive(Default)]
-struct RegistryAllocator2;
-
-impl Compiler {
-    pub fn compile_program(
-        &mut self,
-        term: &AbstractTerm,
-        reference_store: &mut NamedReferenceStore,
-    ) -> CompiledProgram {
-        let mut register_allocator = RegisterAllocator::default();
-        register_allocator.allocate(term, reference_store);
-
-        let flattened_registers = register_allocator.flattened_registers_for_program();
-        let mut instructions = Vec::new();
-
-        instructions.push(Instruction::DebugComment {
-            message: Box::new(" ---- Compiled Program ----".into()),
-        });
-
-        let mut register_queue = flattened_registers
-            .iter()
-            .map(|index| (true, *index))
-            .collect::<VecDeque<_>>();
-        let mut seen_registers = HashSet::new();
-
-        while let Some((is_functor, register_index)) = register_queue.pop_front() {
-            let register = &register_allocator.register_set[register_index];
-            if !is_functor {
-                // Variable or Constant
-                if !seen_registers.contains(&register_index) {
-                    instructions.push(Instruction::UnifyVariable {
-                        register: register_index,
-                    });
-                } else {
-                    instructions.push(Instruction::UnifyValue {
-                        register: register_index,
-                    });
-                }
-
-                seen_registers.insert(register_index);
-            } else {
-                // Functor
-                for sub_register_index in register.sub_term_registers.iter().rev() {
-                    register_queue.push_front((false, *sub_register_index));
-                }
-
-                instructions.push(Instruction::GetStructure {
-                    structure: StructureRef(register.ref_index),
-                    register: register_index,
-                });
-
-                seen_registers.insert(register_index);
+        for term in iter {
+            let descriptor_id = descriptor_allocator.get_or_set(term);
+            if registry_map.contains_key(&descriptor_id) {
+                continue;
             }
+            let register_index = RegisterId(registry_map.len());
+            registry_map.insert(descriptor_id, register_index);
+            registry_ordered_list.push(descriptor_id);
         }
 
-        CompiledProgram {
-            register_allocator,
-            instructions,
+        RegistryAllocator {
+            registry_map,
+            registry_ordered_list,
         }
     }
-
-    pub fn compile_query(
-        &mut self,
-        term: &AbstractTerm,
-        reference_store: &mut NamedReferenceStore,
-    ) -> CompiledQuery {
-        let mut register_allocator = RegisterAllocator::default();
-        register_allocator.allocate(term, reference_store);
-
-        let flattened_registers = register_allocator.flattened_registers_for_query();
-
-        let mut instructions = Vec::new();
-        let mut register_queue = flattened_registers
-            .iter()
-            .map(|index| (true, *index))
-            .collect::<VecDeque<_>>();
-        let mut seen_registers = HashSet::new();
-
-        instructions.push(Instruction::DebugComment {
-            message: Box::new(" ---- Compiled Query ----".into()),
-        });
-
-        while let Some((is_functor, register_index)) = register_queue.pop_front() {
-            let register = &register_allocator.register_set[register_index];
-            if !is_functor {
-                // Variable or Constant
-                if !seen_registers.contains(&register_index) {
-                    instructions.push(Instruction::SetVariable {
-                        register: register_index,
-                    });
-                } else {
-                    instructions.push(Instruction::SetValue {
-                        register: register_index,
-                    });
-                }
-
-                seen_registers.insert(register_index);
-            } else {
-                // Functor
-                for sub_register_index in register.sub_term_registers.iter().rev() {
-                    register_queue.push_front((false, *sub_register_index));
-                }
-
-                instructions.push(Instruction::PutStructure {
-                    structure: StructureRef(register.ref_index),
-                    register: register_index,
-                });
-
-                seen_registers.insert(register_index);
-            }
-        }
-
-        CompiledQuery {
-            instructions,
-            register_allocator,
-        }
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct NamedReferenceStore {
-    registry: HashMap<StoredName, usize>,
-}
-
-impl NamedReferenceStore {
-    pub fn build_functor_descriptions(&self) -> Vec<FunctorDescription> {
-        let mut descriptions = Vec::new();
-        for (name, index) in &self.registry {
-            let arity = match name {
-                StoredName::Structure { arity, .. } => *arity,
-                _ => 0,
-            };
-            descriptions.push(FunctorDescription { arity })
-        }
-        descriptions
-    }
-
-    fn get_or_insert_reference_id(&mut self, name: &StoredName) -> usize {
-        let len = self.registry.len();
-        let index = self.registry.entry(name.clone()).or_insert_with(|| len);
-        *index
-    }
-
-    pub fn get_pretty_name(&self, index: usize) -> String {
-        self.registry
-            .iter()
-            .find_map(|(name, idx)| {
-                if *idx == index {
-                    Some(match name {
-                        StoredName::Variable { name } => name.clone(),
-                        StoredName::Constant { name } => name.clone(),
-                        StoredName::Structure { name, arity } => format!("{}/{}", name, arity),
-                    })
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(format!("_{}", index))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
-pub enum StoredName {
-    Variable { name: String },
-    Constant { name: String },
-    Structure { name: String, arity: usize },
-}
-
-impl Into<StoredName> for &AbstractTerm {
-    fn into(self) -> StoredName {
-        match self {
-            AbstractTerm::Constant(name) => StoredName::Constant { name: name.clone() },
-            AbstractTerm::Variable(name) => StoredName::Variable { name: name.clone() },
-            AbstractTerm::Structure(name, arity) => StoredName::Structure {
-                name: name.clone(),
-                arity: arity.len(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RegisterAllocator {
-    registered: HashMap<(usize, Vec<usize>), usize>,
-    register_set: Vec<Register>,
 }
 
 #[derive(Debug, Clone)]
-struct Register {
-    ref_index: usize,
-    relevant_for_flat: bool,
-    sub_term_registers: Vec<usize>,
+pub struct CompileArtifact {
+    pub instructions: Vec<Instruction>,
+    pub registers: Vec<DescriptorId>,
 }
 
-impl RegisterAllocator {
-    pub fn register_len(&self) -> usize {
-        self.register_set.len()
-    }
-    fn allocate(&mut self, term: &AbstractTerm, reference_store: &mut NamedReferenceStore) {
-        let mut queue = VecDeque::new();
-        queue.push_back((term, None));
+pub fn compile<'a, T: CompileTarget<'a>>(
+    root: &'a AbstractTerm,
+    descriptor_allocator: &mut DescriptorAllocator,
+) -> CompileArtifact {
+    let mut instructions = Vec::new();
+    instructions.push(T::instruction_for_debug_preamble());
 
-        while let Some((current_term, parent)) = queue.pop_front() {
-            let ref_index = reference_store.get_or_insert_reference_id(&current_term.into());
-            let index = match current_term {
-                AbstractTerm::Constant(name) | AbstractTerm::Variable(name) => {
-                    let ref_args = vec![];
-                    let ref_tuple = (ref_index, ref_args);
-                    if let Some(index) = self.registered.get(&ref_tuple) {
-                        *index
-                    } else {
-                        self.registered.insert(ref_tuple, self.register_set.len());
-                        self.register_set.push(Register {
-                            ref_index: ref_index,
-                            sub_term_registers: Vec::new(),
-                            relevant_for_flat: matches!(current_term, AbstractTerm::Constant(_)),
-                        });
-                        self.register_set.len() - 1
-                    }
-                }
-                AbstractTerm::Structure(name, sub_terms) => {
-                    let ref_args = sub_terms
-                        .iter()
-                        .map(|sub_term| {
-                            reference_store.get_or_insert_reference_id(&sub_term.into())
-                        })
-                        .collect();
-                    let ref_tuple = (ref_index, ref_args);
+    let mut processed_vars = HashSet::new();
 
-                    if let Some(index) = self.registered.get(&ref_tuple) {
-                        *index
-                    } else {
-                        self.register_set.push(Register {
-                            ref_index,
-                            sub_term_registers: vec![],
-                            relevant_for_flat: true,
-                        });
-                        let index = self.register_set.len() - 1;
-                        for sub_term in sub_terms {
-                            queue.push_back((sub_term, Some(index)));
+    let registry_allocator = RegistryAllocator::new(root, descriptor_allocator);
+    let iter = T::get_ordered_iterator(root);
+
+    for term in iter {
+        let descriptor_id = descriptor_allocator.get_or_set(term);
+        let register_id = registry_allocator.registry_map.get(&descriptor_id).unwrap();
+        match term {
+            // A constant is esentially a structure with arity zero
+            AbstractTerm::Constant(_) => {
+                instructions.push(T::instruction_for_structure(descriptor_id, *register_id));
+            }
+            AbstractTerm::Structure(_, sub_terms) => {
+                instructions.push(T::instruction_for_structure(descriptor_id, *register_id));
+
+                for sub_term in sub_terms {
+                    let descriptor_id = descriptor_allocator.get_or_set(sub_term);
+                    let register_id = registry_allocator.registry_map.get(&descriptor_id).unwrap();
+
+                    let sub_term_instruction = match sub_term {
+                        AbstractTerm::Constant(_) | AbstractTerm::Structure(_, _) => {
+                            T::instruction_for_value(*register_id)
                         }
-                        self.registered.insert(ref_tuple, index);
-                        index
-                    }
+                        AbstractTerm::Variable(_) if processed_vars.contains(register_id) => {
+                            T::instruction_for_value(*register_id)
+                        }
+                        AbstractTerm::Variable(_) => {
+                            processed_vars.insert(*register_id);
+                            T::instruction_for_variable(*register_id)
+                        }
+                    };
+                    instructions.push(sub_term_instruction);
                 }
-            };
-            if let Some(parent) = parent {
-                self.register_set[parent].sub_term_registers.push(index);
             }
+            _ => {}
         }
     }
 
-    fn flattened_registers_for_query(&self) -> Vec<usize> {
-        let mut flattened = Vec::new();
+    CompileArtifact {
+        instructions,
+        registers: registry_allocator.registry_ordered_list,
+    }
+}
 
-        let mut queue = (0..self.register_set.len()).collect::<VecDeque<_>>();
-        let mut declared = HashSet::new();
+pub struct QueryTarget;
+pub struct ProgramTarget;
 
-        while let Some(register_index) = queue.pop_front() {
-            let register = &self.register_set[register_index];
-            if register.sub_term_registers.iter().all(|index| {
-                declared.contains(index) || self.register_set[*index].sub_term_registers.is_empty()
-            }) {
-                if register.relevant_for_flat {
-                    declared.insert(register_index);
-                    flattened.push(register_index);
-                }
-            } else {
-                queue.push_back(register_index);
-            }
-        }
+impl<'a> CompileTarget<'a> for ProgramTarget {
+    type OrderedIterator = BreadthFirstIterator<'a>;
 
-        flattened
+    fn get_ordered_iterator(root: &'a AbstractTerm) -> Self::OrderedIterator {
+        BreadthFirstIterator::new(root)
     }
 
-    fn flattened_registers_for_program(&self) -> Vec<usize> {
-        self.register_set
-            .iter()
-            .enumerate()
-            .filter_map(|(i, register)| {
-                if register.relevant_for_flat {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    pub fn pretty_term(&self, store: &NamedReferenceStore, index: usize) -> String {
-        let name = self
-            .registered
-            .iter()
-            .find_map(|(ref_index, idx)| {
-                if *idx == index {
-                    Some(store.get_pretty_name(ref_index.0))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(format!("_{}", index));
-        return name;
-    }
-
-    fn pretty_register(&self, store: &NamedReferenceStore, index: usize) -> String {
-        let name = self
-            .registered
-            .iter()
-            .find_map(|(ref_index, idx)| {
-                if *idx == index {
-                    Some(store.get_pretty_name(ref_index.0))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(format!("_{}", index));
-        let register = &self.register_set[index];
-
-        if register.sub_term_registers.is_empty() {
-            format!("X{} = {}", index + 1, name)
-        } else {
-            format!(
-                "X{}: {}({})",
-                index + 1,
-                name,
-                register
-                    .sub_term_registers
-                    .iter()
-                    .map(|&idx| format!("X{}", idx + 1))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
+    fn instruction_for_debug_preamble() -> Instruction {
+        Instruction::DebugComment {
+            message: Box::new("Generate code for program".to_string()),
         }
     }
 
-    pub fn pretty_print_registers_flattened_query(
-        &self,
-        store: &NamedReferenceStore,
-    ) -> Vec<String> {
-        self.flattened_registers_for_query()
-            .iter()
-            .map(|&index| self.pretty_register(store, index))
-            .collect::<Vec<_>>()
+    fn instruction_for_value(register: RegisterId) -> Instruction {
+        Instruction::UnifyValue { register }
     }
 
-    pub fn pretty_print_registers_flattened_program(
-        &self,
-        store: &NamedReferenceStore,
-    ) -> Vec<String> {
-        self.flattened_registers_for_program()
-            .iter()
-            .map(|&index| self.pretty_register(store, index))
-            .collect::<Vec<_>>()
+    fn instruction_for_variable(register: RegisterId) -> Instruction {
+        Instruction::UnifyVariable { register }
     }
 
-    pub fn pretty_print_registers_all(&self, store: &NamedReferenceStore) -> Vec<String> {
-        (0..self.register_set.len())
-            .map(|index| self.pretty_register(store, index))
-            .collect::<Vec<_>>()
+    fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction {
+        Instruction::GetStructure {
+            structure: descriptor_id,
+            register,
+        }
+    }
+}
+
+impl<'a> CompileTarget<'a> for QueryTarget {
+    type OrderedIterator = PostOrderIterator<'a>;
+
+    fn get_ordered_iterator(root: &'a AbstractTerm) -> Self::OrderedIterator {
+        PostOrderIterator::new(root)
     }
 
-    pub fn pretty_print_registers(
-        &self,
-        store: &NamedReferenceStore,
-        registers: &[usize],
-    ) -> Vec<String> {
-        registers
-            .iter()
-            .map(|&index| self.pretty_register(store, index))
-            .collect::<Vec<_>>()
+    fn instruction_for_debug_preamble() -> Instruction {
+        Instruction::DebugComment {
+            message: Box::new("Generate code for query".to_string()),
+        }
+    }
+
+    fn instruction_for_value(register: RegisterId) -> Instruction {
+        Instruction::SetValue { register }
+    }
+
+    fn instruction_for_variable(register: RegisterId) -> Instruction {
+        Instruction::SetVariable { register }
+    }
+
+    fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction {
+        Instruction::PutStructure {
+            structure: descriptor_id,
+            register,
+        }
     }
 }

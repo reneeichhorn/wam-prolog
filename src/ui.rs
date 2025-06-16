@@ -11,7 +11,9 @@ use ratatui::{
 };
 
 use crate::{
-    compiler::{Compiler, NamedReferenceStore, RegisterAllocator},
+    compiler::{CompileArtifact, ProgramTarget, QueryTarget, compile},
+    descriptor::{self, DescriptorAllocator},
+    instructions::DescriptorId,
     interpreter::{Cell, Interpreter},
     parsing::{AbstractTerm, parse},
     ui::{
@@ -30,11 +32,10 @@ pub struct App {
     program: String,
     program_ast: AbstractTerm,
     instructions: Vec<crate::instructions::Instruction>,
-    named_references: NamedReferenceStore,
+    descriptors: DescriptorAllocator,
     interpreter: Interpreter,
-    compiler: Compiler,
-    register_allocator: RegisterAllocator,
-    register_allocator_program: RegisterAllocator,
+    compile_artifact_query: CompileArtifact,
+    compile_artifact_program: CompileArtifact,
     counter: u8,
     show_ast: bool,
     show_ast_program: bool,
@@ -46,22 +47,22 @@ impl App {
     pub fn new(query_str: String, program_str: String) -> Result<Self> {
         let query = parse(&query_str)?;
         let program = parse(&program_str)?;
-        let mut reference_store = NamedReferenceStore::default();
 
-        let mut compiler = Compiler::default();
-        let compiled_query = compiler.compile_query(&query, &mut reference_store);
-        let compiled_program = compiler.compile_program(&program, &mut reference_store);
+        let mut descriptors = DescriptorAllocator::default();
 
-        let mut instructions = compiled_query.instructions;
-        instructions.extend(compiled_program.instructions);
+        let compile_artifact_query = compile::<QueryTarget>(&query, &mut descriptors);
+        let compile_artifact_program = compile::<ProgramTarget>(&program, &mut descriptors);
+
+        let mut instructions = compile_artifact_query.instructions.clone();
+        instructions.extend(compile_artifact_program.instructions.clone());
 
         let interpreter = Interpreter::new(
             instructions.clone(),
-            compiled_query
-                .register_allocator
-                .register_len()
-                .max(compiled_program.register_allocator.register_len()),
-            reference_store.build_functor_descriptions(),
+            compile_artifact_query
+                .registers
+                .len()
+                .max(compile_artifact_program.registers.len()),
+            descriptors.descriptors.clone(),
         );
 
         Ok(Self {
@@ -70,11 +71,10 @@ impl App {
             program: program_str,
             program_ast: program,
             interpreter,
-            compiler,
-            named_references: reference_store,
-            register_allocator: compiled_query.register_allocator,
-            register_allocator_program: compiled_program.register_allocator,
             instructions,
+            compile_artifact_program,
+            compile_artifact_query,
+            descriptors,
             ast_state: TextViewState::default(),
             counter: 0,
             exit: false,
@@ -154,7 +154,7 @@ impl App {
                 self.interpreter = Interpreter::new(
                     self.instructions.clone(),
                     self.interpreter.registers.len(),
-                    self.named_references.build_functor_descriptions(),
+                    self.descriptors.descriptors.clone(),
                 );
             }
             KeyCode::Left => self.decrement_counter(),
@@ -239,12 +239,7 @@ impl Widget for &mut App {
 
         let right_side_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Fill(1),
-                Constraint::Fill(1),
-                Constraint::Fill(1),
-                Constraint::Fill(1),
-            ])
+            .constraints(vec![Constraint::Fill(1), Constraint::Fill(1)])
             .split(main_layout[2]);
 
         // Instructions view
@@ -260,11 +255,9 @@ impl Widget for &mut App {
             .padding(ratatui::widgets::Padding::proportional(1));
         block.clone().render(main_layout[0], buf);
         InstructionView {
-            register_allocator: &self.register_allocator,
             instructions: &self.instructions,
-            compiler: &self.compiler,
             interpreter: &self.interpreter,
-            named_references: &self.named_references,
+            descriptors: &self.descriptors,
         }
         .render(
             block.inner(main_layout[0]),
@@ -273,11 +266,7 @@ impl Widget for &mut App {
         );
 
         // Rigth side global stack
-        let global_stack_text = format_cells(
-            &self.interpreter.global_stack,
-            &self.register_allocator,
-            &self.named_references,
-        );
+        let global_stack_text = format_cells(&self.interpreter.global_stack, &self.descriptors);
         let block = Block::bordered()
             .title(" Global Stack ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -296,11 +285,7 @@ impl Widget for &mut App {
         );
 
         // Rigth side registers
-        let registers_text = format_cells(
-            &self.interpreter.registers,
-            &self.register_allocator,
-            &self.named_references,
-        );
+        let registers_text = format_cells(&self.interpreter.registers, &self.descriptors);
         let block = Block::bordered()
             .title(" Registers ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -343,14 +328,8 @@ impl Widget for &mut App {
         );
 
         // Right side register view
-        let registers = self
-            .register_allocator_program
-            .pretty_print_registers_all(&mut self.named_references);
-        let registers_text = format!("{}", registers.join("\n"),);
-        let registers_flattened = self
-            .register_allocator_program
-            .pretty_print_registers_flattened_program(&mut self.named_references);
-        let registers_text_flattened = format!("{}", registers_flattened.join("\n"));
+        let registers_text =
+            format_registers(&self.compile_artifact_program.registers, &self.descriptors);
         let block = Block::bordered()
             .title(" Register Allocation View (Program) ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -367,34 +346,13 @@ impl Widget for &mut App {
             buf,
             &mut TextViewState::default(),
         );
-        let block = Block::bordered()
-            .title(" Register Allocation View (Program - Flattened) ")
-            .padding(ratatui::widgets::Padding::proportional(1));
-        block.clone().render(right_side_layout[1], buf);
-        TextView {
-            line_no_style: ratatui::style::Style::default().fg(Color::Gray),
-            style: ratatui::style::Style::default().fg(Color::White),
-            tab_width: 2,
-            start_line: 1,
-            text: &registers_text_flattened,
-        }
-        .render(
-            block.inner(right_side_layout[1]),
-            buf,
-            &mut TextViewState::default(),
-        );
-        let registers = self
-            .register_allocator
-            .pretty_print_registers_all(&mut self.named_references);
-        let registers_text = format!("{}", registers.join("\n"),);
-        let registers_flattened = self
-            .register_allocator
-            .pretty_print_registers_flattened_query(&mut self.named_references);
-        let registers_text_flattened = format!("{}", registers_flattened.join("\n"));
+
+        let registers_text =
+            format_registers(&self.compile_artifact_query.registers, &self.descriptors);
         let block = Block::bordered()
             .title(" Register Allocation View (Query) ")
             .padding(ratatui::widgets::Padding::proportional(1));
-        block.clone().render(right_side_layout[2], buf);
+        block.clone().render(right_side_layout[1], buf);
         TextView {
             line_no_style: ratatui::style::Style::default().fg(Color::Gray),
             style: ratatui::style::Style::default().fg(Color::White),
@@ -403,23 +361,7 @@ impl Widget for &mut App {
             text: &registers_text,
         }
         .render(
-            block.inner(right_side_layout[2]),
-            buf,
-            &mut TextViewState::default(),
-        );
-        let block = Block::bordered()
-            .title(" Register Allocation View (Query - Flattened) ")
-            .padding(ratatui::widgets::Padding::proportional(1));
-        block.clone().render(right_side_layout[3], buf);
-        TextView {
-            line_no_style: ratatui::style::Style::default().fg(Color::Gray),
-            style: ratatui::style::Style::default().fg(Color::White),
-            tab_width: 2,
-            start_line: 1,
-            text: &registers_text_flattened,
-        }
-        .render(
-            block.inner(right_side_layout[3]),
+            block.inner(right_side_layout[1]),
             buf,
             &mut TextViewState::default(),
         );
@@ -453,11 +395,22 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     area
 }
 
-fn format_cells(
-    cells: &[Cell],
-    register_allocator: &RegisterAllocator,
-    named_references: &NamedReferenceStore,
-) -> String {
+fn format_registers(registers: &[DescriptorId], descriptors: &DescriptorAllocator) -> String {
+    let formatted_cells = registers
+        .iter()
+        .enumerate()
+        .map(|(i, descriptor_id)| {
+            format!(
+                "X{}:  {}",
+                i + 1,
+                descriptors.get(*descriptor_id).pretty_name()
+            )
+        })
+        .collect::<Vec<_>>();
+    formatted_cells.join("\n")
+}
+
+fn format_cells(cells: &[Cell], descriptors: &DescriptorAllocator) -> String {
     let formatted_cells = cells
         .iter()
         .map(|cell| match cell {
@@ -465,7 +418,7 @@ fn format_cells(
             Cell::Reference(re) => format!("REF({})", re),
             Cell::StructureRef(struc) => format!("STR({})", struc),
             Cell::Structure(struc) => {
-                format!("{}", named_references.get_pretty_name(*struc))
+                format!("{}", descriptors.get(*struc).pretty_name())
             }
         })
         .collect::<Vec<_>>();

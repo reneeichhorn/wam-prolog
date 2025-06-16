@@ -1,14 +1,15 @@
 use anyhow::Result;
 
 use crate::{
-    compiler::{CompiledProgram, CompiledQuery, NamedReferenceStore},
+    compiler::CompileArtifact,
+    descriptor::DescriptorAllocator,
     interpreter::{self, ExecutionState, Interpreter},
 };
 
 pub struct EndUserExecutor {
-    program: Option<CompiledProgram>,
-    query: Option<CompiledQuery>,
-    interpreter: Option<Interpreter>,
+    program: Option<CompileArtifact>,
+    query: Option<CompileArtifact>,
+    pub interpreter: Option<Interpreter>,
 }
 
 impl EndUserExecutor {
@@ -20,19 +21,19 @@ impl EndUserExecutor {
         }
     }
 
-    pub fn set_program(&mut self, program: CompiledProgram) {
+    pub fn set_program(&mut self, program: CompileArtifact) {
         self.program = Some(program);
         self.interpreter = None;
     }
 
-    pub fn set_query(&mut self, query: CompiledQuery) {
+    pub fn set_query(&mut self, query: CompileArtifact) {
         self.query = Some(query);
         self.interpreter = None;
     }
 
     fn prepare_interpreter(
         &mut self,
-        reference_store: &mut NamedReferenceStore,
+        descriptors: &mut DescriptorAllocator,
     ) -> Result<&mut Interpreter> {
         if self.interpreter.is_none() {
             let query = self
@@ -49,11 +50,8 @@ impl EndUserExecutor {
 
             let interpreter = Interpreter::new(
                 instructions,
-                query
-                    .register_allocator
-                    .register_len()
-                    .max(program.register_allocator.register_len()),
-                reference_store.build_functor_descriptions(),
+                query.registers.len().max(program.registers.len()),
+                descriptors.descriptors.clone(),
             );
 
             self.interpreter = Some(interpreter);
@@ -62,8 +60,8 @@ impl EndUserExecutor {
         Ok(self.interpreter.as_mut().unwrap())
     }
 
-    pub fn execute(&mut self, reference_store: &mut NamedReferenceStore) -> Result<EndUserResult> {
-        let interpreter = self.prepare_interpreter(reference_store)?;
+    pub fn execute(&mut self, descriptors: &mut DescriptorAllocator) -> Result<EndUserResult> {
+        let interpreter = self.prepare_interpreter(descriptors)?;
         while interpreter.step() {}
         Ok(EndUserResult {
             success: interpreter.execution_state == ExecutionState::Normal,
@@ -71,6 +69,7 @@ impl EndUserExecutor {
     }
 }
 
+#[derive(Debug)]
 pub struct EndUserResult {
     pub success: bool,
 }

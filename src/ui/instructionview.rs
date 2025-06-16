@@ -3,17 +3,11 @@ use ratatui::{prelude::*, widgets::StatefulWidget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{
-    compiler::{NamedReferenceStore, RegisterAllocator},
-    instructions::Instruction,
-    interpreter::Interpreter,
-}; // remember to add `unicode-width = "0.2"` in Cargo.toml // remember to add `unicode-segmentation = "1.10"` in Cargo.toml
+use crate::{descriptor::DescriptorAllocator, instructions::Instruction, interpreter::Interpreter}; // remember to add `unicode-width = "0.2"` in Cargo.toml // remember to add `unicode-segmentation = "1.10"` in Cargo.toml
 
 /// Widget (pure data – no mutable state inside)
 pub struct InstructionView<'a> {
-    pub compiler: &'a crate::compiler::Compiler,
-    pub register_allocator: &'a RegisterAllocator,
-    pub named_references: &'a NamedReferenceStore,
+    pub descriptors: &'a DescriptorAllocator,
     pub interpreter: &'a Interpreter,
     pub instructions: &'a [crate::instructions::Instruction],
 }
@@ -43,15 +37,15 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                 } => {
                     format!(
                         "put_structure {}, X{}",
-                        self.named_references.get_pretty_name(structure.0),
-                        register + 1
+                        self.descriptors.get(*structure).pretty_name(),
+                        register.0 + 1
                     )
                 }
                 Instruction::SetVariable { register } => {
-                    format!("set_variable X{}", register + 1)
+                    format!("set_variable X{}", register.0 + 1)
                 }
                 Instruction::SetValue { register } => {
-                    format!("set_value X{}", register + 1)
+                    format!("set_value X{}", register.0 + 1)
                 }
                 Instruction::DebugComment { message } => {
                     format!(";; {}", message)
@@ -62,15 +56,15 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                 } => {
                     format!(
                         "get_structure {}, X{}",
-                        self.named_references.get_pretty_name(structure.0),
-                        register + 1
+                        self.descriptors.get(*structure).pretty_name(),
+                        register.0 + 1
                     )
                 }
                 Instruction::UnifyVariable { register } => {
-                    format!("unify_variable X{}", register + 1)
+                    format!("unify_variable X{}", register.0 + 1)
                 }
                 Instruction::UnifyValue { register } => {
-                    format!("unify_value X{}", register + 1)
+                    format!("unify_value X{}", register.0 + 1)
                 }
             })
             .collect::<Vec<_>>()
