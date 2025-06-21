@@ -36,6 +36,20 @@ pub enum CellAddress {
 }
 
 impl CellAddress {
+    fn is_global_stack(&self) -> bool {
+        match self {
+            CellAddress::Register { .. } => false,
+            CellAddress::GlobalStack { .. } => true,
+        }
+    }
+
+    fn is_register(&self) -> bool {
+        match self {
+            CellAddress::Register { .. } => true,
+            CellAddress::GlobalStack { .. } => false,
+        }
+    }
+
     fn index_num(&self) -> usize {
         match self {
             CellAddress::Register { index } => *index,
@@ -85,9 +99,31 @@ impl Interpreter {
     }
 
     fn bind_address(&mut self, a: CellAddress, b: CellAddress) {
+        let b_address = b.index_num();
+
+        let a = self.deref_cell(a);
+        let a_cell = self.lookup_address_mut(a);
+        *a_cell = Cell::Reference(b_address);
+
+        /*
+        let a = self.deref_cell(a);
+        let b = self.deref_cell(b);
+
         let a_value = self.lookup_address(a);
         let b_value = self.lookup_address(b);
 
+        match a_value {
+            Cell::Reference(a_reference) => {
+                let new_value = b.index_num();
+                let a_value_mut = self.lookup_address_mut(a);
+                *a_value_mut = Cell::Reference(new_value);
+            }
+            _ => {
+                let new_value = a.index_num();
+                let b_value_mut = self.lookup_address_mut(b);
+                *b_value_mut = Cell::Reference(new_value);
+            }
+        }
         match (a_value, b_value) {
             (Cell::Reference(a_ref), Cell::Reference(b_ref)) if a_ref < b_ref => {
                 let new_value = b_value.clone();
@@ -105,13 +141,14 @@ impl Interpreter {
                 *b_value_mut = new_value;
             }
         }
+        */
     }
 
     fn deref_cell(&self, address: CellAddress) -> CellAddress {
         let value = self.lookup_address(address);
         let index = address.index_num();
         match value {
-            Cell::Reference(child_address) if *child_address != index => {
+            Cell::Reference(child_address) if *child_address != index || address.is_register() => {
                 self.deref_cell(CellAddress::GlobalStack {
                     index: *child_address,
                 })
@@ -202,6 +239,23 @@ impl Interpreter {
                 let value = self.registers[register.0].clone();
                 self.global_stack.push(value);
             }
+            Instruction::PutValue {
+                value_register,
+                argument_register,
+            } => {
+                let value = self.registers[value_register.0].clone();
+                self.registers[argument_register.0] = value;
+            }
+            Instruction::PutVariable {
+                argument_register,
+                variable_register,
+            } => {
+                let new_unbound = Cell::Reference(self.global_stack.len());
+                self.global_stack.push(new_unbound.clone());
+                self.registers[argument_register.0] = new_unbound.clone();
+                self.registers[variable_register.0] = new_unbound;
+            }
+
             // Debug instructions --------------------------------------------
             Instruction::DebugComment { .. } => {}
             // Program instructions --------------------------------------------
@@ -237,6 +291,25 @@ impl Interpreter {
                     }
                     _ => self.execution_state = ExecutionState::Failure,
                 }
+            }
+            Instruction::GetVariable {
+                argument_register,
+                variable_register,
+            } => {
+                self.registers[variable_register.0] = self.registers[argument_register.0].clone();
+            }
+            Instruction::GetValue {
+                argument_register,
+                value_register,
+            } => {
+                self.unify(
+                    CellAddress::Register {
+                        index: value_register.0,
+                    },
+                    CellAddress::Register {
+                        index: argument_register.0,
+                    },
+                );
             }
             Instruction::UnifyVariable { register } => {
                 match self.mode {
@@ -277,6 +350,14 @@ impl Interpreter {
                     }
                 }
                 self.next_sub_term_address += 1;
+            }
+            // Control flow
+            Instruction::Proceed => {
+                // TODO: proper proceed
+                return false;
+            }
+            Instruction::Call { address } => {
+                self.instruction_index = *address;
             }
         }
 

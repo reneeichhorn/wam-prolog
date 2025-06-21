@@ -3,12 +3,18 @@ use ratatui::{prelude::*, widgets::StatefulWidget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{descriptor::DescriptorAllocator, instructions::Instruction, interpreter::Interpreter}; // remember to add `unicode-width = "0.2"` in Cargo.toml // remember to add `unicode-segmentation = "1.10"` in Cargo.toml
+use crate::{
+    descriptor::DescriptorAllocator,
+    instructions::{Instruction, RegisterId},
+    interpreter::Interpreter,
+    parsing::AbstractTerm,
+}; // remember to add `unicode-width = "0.2"` in Cargo.toml // remember to add `unicode-segmentation = "1.10"` in Cargo.toml
 
 /// Widget (pure data – no mutable state inside)
 pub struct InstructionView<'a> {
     pub descriptors: &'a DescriptorAllocator,
     pub interpreter: &'a Interpreter,
+    pub root_term: &'a AbstractTerm,
     pub instructions: &'a [crate::instructions::Instruction],
 }
 
@@ -16,6 +22,14 @@ pub struct InstructionView<'a> {
 #[derive(Default, Debug, Clone)]
 pub struct InstructionViewState {
     pub scroll: u16, // first visible line (0-based)
+}
+
+pub fn format_register(register: &RegisterId, root_term: &AbstractTerm) -> String {
+    if register.0 >= root_term.arity() {
+        format!("X{}", register.0 + 1)
+    } else {
+        format!("A{}", register.0 + 1)
+    }
 }
 
 impl<'a> StatefulWidget for InstructionView<'a> {
@@ -36,16 +50,37 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                     register,
                 } => {
                     format!(
-                        "put_structure {}, X{}",
+                        "put_structure {}, {}",
                         self.descriptors.get(*structure).pretty_name(),
-                        register.0 + 1
+                        format_register(register, self.root_term)
                     )
                 }
+                Instruction::PutVariable {
+                    argument_register,
+                    variable_register,
+                } => {
+                    format!(
+                        "put_variable {}, {}",
+                        format_register(variable_register, self.root_term),
+                        format_register(argument_register, self.root_term),
+                    )
+                }
+                Instruction::PutValue {
+                    argument_register,
+                    value_register,
+                } => {
+                    format!(
+                        "put_value {}, {}",
+                        format_register(value_register, self.root_term),
+                        format_register(argument_register, self.root_term),
+                    )
+                }
+
                 Instruction::SetVariable { register } => {
-                    format!("set_variable X{}", register.0 + 1)
+                    format!("set_variable {}", format_register(register, self.root_term))
                 }
                 Instruction::SetValue { register } => {
-                    format!("set_value X{}", register.0 + 1)
+                    format!("set_value {}", format_register(register, self.root_term))
                 }
                 Instruction::DebugComment { message } => {
                     format!(";; {}", message)
@@ -55,16 +90,46 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                     register,
                 } => {
                     format!(
-                        "get_structure {}, X{}",
+                        "get_structure {}, {}",
                         self.descriptors.get(*structure).pretty_name(),
-                        register.0 + 1
+                        format_register(register, self.root_term)
                     )
                 }
+                Instruction::GetValue {
+                    argument_register,
+                    value_register,
+                } => {
+                    format!(
+                        "get_value {}, {}",
+                        format_register(value_register, self.root_term),
+                        format_register(argument_register, self.root_term),
+                    )
+                }
+                Instruction::GetVariable {
+                    argument_register,
+                    variable_register,
+                } => {
+                    format!(
+                        "get_variable {}, {}",
+                        format_register(variable_register, self.root_term),
+                        format_register(argument_register, self.root_term),
+                    )
+                }
+
                 Instruction::UnifyVariable { register } => {
-                    format!("unify_variable X{}", register.0 + 1)
+                    format!(
+                        "unify_variable {}",
+                        format_register(register, self.root_term)
+                    )
                 }
                 Instruction::UnifyValue { register } => {
-                    format!("unify_value X{}", register.0 + 1)
+                    format!("unify_value {}", format_register(register, self.root_term))
+                }
+                Instruction::Proceed => {
+                    format!("proceed")
+                }
+                Instruction::Call { address } => {
+                    format!("call {}", address + 1)
                 }
             })
             .collect::<Vec<_>>()

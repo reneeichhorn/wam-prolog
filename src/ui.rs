@@ -11,13 +11,13 @@ use ratatui::{
 };
 
 use crate::{
-    compiler::{CompileArtifact, ProgramTarget, QueryTarget, compile},
+    compiler::{CompileArtifact, Compiler, ProgramTarget, QueryTarget},
     descriptor::{self, DescriptorAllocator},
-    instructions::DescriptorId,
+    instructions::{DescriptorId, RegisterId},
     interpreter::{Cell, Interpreter},
     parsing::{AbstractTerm, parse},
     ui::{
-        instructionview::{InstructionView, InstructionViewState},
+        instructionview::{InstructionView, InstructionViewState, format_register},
         textview::{TextView, TextViewState},
     },
 };
@@ -32,8 +32,8 @@ pub struct App {
     program: String,
     program_ast: AbstractTerm,
     instructions: Vec<crate::instructions::Instruction>,
-    descriptors: DescriptorAllocator,
     interpreter: Interpreter,
+    compiler: Compiler,
     compile_artifact_query: CompileArtifact,
     compile_artifact_program: CompileArtifact,
     counter: u8,
@@ -48,13 +48,12 @@ impl App {
         let query = parse(&query_str)?;
         let program = parse(&program_str)?;
 
-        let mut descriptors = DescriptorAllocator::default();
+        let mut compiler = Compiler::new();
 
-        let compile_artifact_query = compile::<QueryTarget>(&query, &mut descriptors);
-        let compile_artifact_program = compile::<ProgramTarget>(&program, &mut descriptors);
+        let compile_artifact_program = compiler.add_fact(&program);
+        let compile_artifact_query = compiler.compile(&query);
 
-        let mut instructions = compile_artifact_query.instructions.clone();
-        instructions.extend(compile_artifact_program.instructions.clone());
+        let instructions = compile_artifact_query.instructions.clone();
 
         let interpreter = Interpreter::new(
             instructions.clone(),
@@ -62,7 +61,7 @@ impl App {
                 .registers
                 .len()
                 .max(compile_artifact_program.registers.len()),
-            descriptors.descriptors.clone(),
+            compiler.descriptor_allocator.descriptors.clone(),
         );
 
         Ok(Self {
@@ -74,7 +73,7 @@ impl App {
             instructions,
             compile_artifact_program,
             compile_artifact_query,
-            descriptors,
+            compiler,
             ast_state: TextViewState::default(),
             counter: 0,
             exit: false,
@@ -154,7 +153,7 @@ impl App {
                 self.interpreter = Interpreter::new(
                     self.instructions.clone(),
                     self.interpreter.registers.len(),
-                    self.descriptors.descriptors.clone(),
+                    self.compiler.descriptor_allocator.descriptors.clone(),
                 );
             }
             KeyCode::Left => self.decrement_counter(),
@@ -257,7 +256,8 @@ impl Widget for &mut App {
         InstructionView {
             instructions: &self.instructions,
             interpreter: &self.interpreter,
-            descriptors: &self.descriptors,
+            descriptors: &self.compiler.descriptor_allocator,
+            root_term: &self.ast,
         }
         .render(
             block.inner(main_layout[0]),
@@ -266,7 +266,10 @@ impl Widget for &mut App {
         );
 
         // Rigth side global stack
-        let global_stack_text = format_cells(&self.interpreter.global_stack, &self.descriptors);
+        let global_stack_text = format_cells(
+            &self.interpreter.global_stack,
+            &self.compiler.descriptor_allocator,
+        );
         let block = Block::bordered()
             .title(" Global Stack ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -285,7 +288,10 @@ impl Widget for &mut App {
         );
 
         // Rigth side registers
-        let registers_text = format_cells(&self.interpreter.registers, &self.descriptors);
+        let registers_text = format_cells(
+            &self.interpreter.registers,
+            &self.compiler.descriptor_allocator,
+        );
         let block = Block::bordered()
             .title(" Registers ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -328,8 +334,11 @@ impl Widget for &mut App {
         );
 
         // Right side register view
-        let registers_text =
-            format_registers(&self.compile_artifact_program.registers, &self.descriptors);
+        let registers_text = format_registers(
+            &self.compile_artifact_program.registers,
+            &self.compiler.descriptor_allocator,
+            &self.ast,
+        );
         let block = Block::bordered()
             .title(" Register Allocation View (Program) ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -347,8 +356,11 @@ impl Widget for &mut App {
             &mut TextViewState::default(),
         );
 
-        let registers_text =
-            format_registers(&self.compile_artifact_query.registers, &self.descriptors);
+        let registers_text = format_registers(
+            &self.compile_artifact_query.registers,
+            &self.compiler.descriptor_allocator,
+            &self.program_ast,
+        );
         let block = Block::bordered()
             .title(" Register Allocation View (Query) ")
             .padding(ratatui::widgets::Padding::proportional(1));
@@ -395,14 +407,18 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     area
 }
 
-fn format_registers(registers: &[DescriptorId], descriptors: &DescriptorAllocator) -> String {
+fn format_registers(
+    registers: &[DescriptorId],
+    descriptors: &DescriptorAllocator,
+    term: &AbstractTerm,
+) -> String {
     let formatted_cells = registers
         .iter()
         .enumerate()
         .map(|(i, descriptor_id)| {
             format!(
-                "X{}:  {}",
-                i + 1,
+                "{}:  {}",
+                format_register(&RegisterId(i), term),
                 descriptors.get(*descriptor_id).pretty_name()
             )
         })

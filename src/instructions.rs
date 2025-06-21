@@ -11,6 +11,14 @@ pub enum Instruction {
         structure: DescriptorId,
         register: RegisterId,
     },
+    PutVariable {
+        argument_register: RegisterId,
+        variable_register: RegisterId,
+    },
+    PutValue {
+        argument_register: RegisterId,
+        value_register: RegisterId,
+    },
     SetVariable {
         register: RegisterId,
     },
@@ -25,10 +33,23 @@ pub enum Instruction {
         structure: DescriptorId,
         register: RegisterId,
     },
+    GetVariable {
+        argument_register: RegisterId,
+        variable_register: RegisterId,
+    },
+    GetValue {
+        argument_register: RegisterId,
+        value_register: RegisterId,
+    },
     UnifyVariable {
         register: RegisterId,
     },
     UnifyValue {
         register: RegisterId,
     },
+    // Control Instructions ----------------------------
+    Call {
+        address: usize,
+    },
+    Proceed,
 }

@@ -50,3 +50,21 @@ pub enum AbstractTerm {
     Constant(String),
     Structure(String, Vec<AbstractTerm>),
 }
+
+impl AbstractTerm {
+    pub fn arity(&self) -> usize {
+        match self {
+            AbstractTerm::Variable(_) => 0,
+            AbstractTerm::Constant(_) => 0,
+            AbstractTerm::Structure(_, args) => args.len(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            AbstractTerm::Variable(name) => name,
+            AbstractTerm::Constant(name) => name,
+            AbstractTerm::Structure(name, _) => name,
+        }
+    }
+}

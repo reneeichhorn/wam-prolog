@@ -1,22 +1,34 @@
 use prolog_wan::{
-    compiler::{ProgramTarget, QueryTarget, compile},
+    compiler::{Compiler, ProgramTarget, QueryTarget},
     descriptor::DescriptorAllocator,
-    end_user_executor::{EndUserExecutor, EndUserResult},
+    interpreter::{ExecutionState, Interpreter},
     parsing::parse,
 };
 
-fn helper_execute(program: &str, query: &str) -> EndUserResult {
+struct Output {
+    success: bool,
+}
+
+fn helper_execute(program: &str, query: &str) -> Output {
     let program = parse(program).unwrap();
     let query = parse(query).unwrap();
 
-    let mut descriptors = DescriptorAllocator::default();
-    let program = compile::<ProgramTarget>(&program, &mut descriptors);
-    let query = compile::<QueryTarget>(&query, &mut descriptors);
+    let mut compiler = Compiler::new();
+    let fact_artifact = compiler.add_fact(&program);
+    let query_artifact = compiler.compile(&query);
 
-    let mut executor = EndUserExecutor::new();
-    executor.set_program(program);
-    executor.set_query(query);
-    executor.execute(&mut descriptors).unwrap()
+    let mut interpreter = Interpreter::new(
+        query_artifact.instructions,
+        fact_artifact
+            .registers
+            .len()
+            .max(query_artifact.registers.len()),
+        compiler.descriptor_allocator.descriptors.clone(),
+    );
+    while interpreter.step() {}
+    Output {
+        success: interpreter.execution_state == ExecutionState::Normal,
+    }
 }
 
 #[test]
