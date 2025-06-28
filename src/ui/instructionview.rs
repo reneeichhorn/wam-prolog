@@ -1,5 +1,9 @@
 use color_eyre::owo_colors::OwoColorize;
-use ratatui::{prelude::*, widgets::StatefulWidget};
+use ratatui::{
+    prelude::*,
+    text::{Line, Span},
+    widgets::StatefulWidget,
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -7,14 +11,12 @@ use crate::{
     descriptor::DescriptorAllocator,
     instructions::{Instruction, RegisterId},
     interpreter::Interpreter,
-    parsing::AbstractTerm,
-}; // remember to add `unicode-width = "0.2"` in Cargo.toml // remember to add `unicode-segmentation = "1.10"` in Cargo.toml
+};
 
 /// Widget (pure data – no mutable state inside)
 pub struct InstructionView<'a> {
     pub descriptors: &'a DescriptorAllocator,
     pub interpreter: &'a Interpreter,
-    pub root_term: &'a AbstractTerm,
     pub instructions: &'a [crate::instructions::Instruction],
 }
 
@@ -24,11 +26,17 @@ pub struct InstructionViewState {
     pub scroll: u16, // first visible line (0-based)
 }
 
-pub fn format_register(register: &RegisterId, root_term: &AbstractTerm) -> String {
-    if register.0 >= root_term.arity() {
-        format!("X{}", register.0 + 1)
-    } else {
-        format!("A{}", register.0 + 1)
+pub fn format_register(register: &RegisterId) -> Span<'static> {
+    match register {
+        RegisterId::Argument(i) => {
+            Span::styled(format!("A{}", i + 1), Style::default().fg(Color::Yellow))
+        }
+        RegisterId::Temporary(i) => {
+            Span::styled(format!("X{}", i + 1), Style::default().fg(Color::Cyan))
+        }
+        RegisterId::Permanent(i) => {
+            Span::styled(format!("Y{}", i + 1), Style::default().fg(Color::Green))
+        }
     }
 }
 
@@ -41,109 +49,111 @@ impl<'a> StatefulWidget for InstructionView<'a> {
         let style = ratatui::style::Style::default().fg(Color::White);
         let line_no_indicator_style = ratatui::style::Style::default().fg(Color::White);
 
-        let text = self
+        let lines = self
             .instructions
             .iter()
             .map(|i| match i {
                 Instruction::PutStructure {
                     structure,
                     register,
-                } => {
-                    format!(
-                        "put_structure {}, {}",
+                } => Line::from(vec![
+                    Span::raw("put_structure "),
+                    Span::styled(
                         self.descriptors.get(*structure).pretty_name(),
-                        format_register(register, self.root_term)
-                    )
-                }
+                        Style::default().fg(Color::LightRed),
+                    ),
+                    Span::raw(", "),
+                    format_register(register),
+                ]),
                 Instruction::PutVariable {
                     argument_register,
                     variable_register,
-                } => {
-                    format!(
-                        "put_variable {}, {}",
-                        format_register(variable_register, self.root_term),
-                        format_register(argument_register, self.root_term),
-                    )
-                }
+                } => Line::from(vec![
+                    Span::raw("put_variable "),
+                    format_register(variable_register),
+                    Span::raw(", "),
+                    format_register(argument_register),
+                ]),
                 Instruction::PutValue {
                     argument_register,
                     value_register,
-                } => {
-                    format!(
-                        "put_value {}, {}",
-                        format_register(value_register, self.root_term),
-                        format_register(argument_register, self.root_term),
-                    )
-                }
+                } => Line::from(vec![
+                    Span::raw("put_value "),
+                    format_register(value_register),
+                    Span::raw(", "),
+                    format_register(argument_register),
+                ]),
 
                 Instruction::SetVariable { register } => {
-                    format!("set_variable {}", format_register(register, self.root_term))
+                    Line::from(vec![Span::raw("set_variable "), format_register(register)])
                 }
                 Instruction::SetValue { register } => {
-                    format!("set_value {}", format_register(register, self.root_term))
+                    Line::from(vec![Span::raw("set_value "), format_register(register)])
                 }
-                Instruction::DebugComment { message } => {
-                    format!(";; {}", message)
-                }
+                Instruction::DebugComment { message } => Line::from(vec![Span::styled(
+                    format!(";; {}", message),
+                    Style::default().fg(Color::DarkGray),
+                )]),
                 Instruction::GetStructure {
                     structure,
                     register,
-                } => {
-                    format!(
-                        "get_structure {}, {}",
+                } => Line::from(vec![
+                    Span::raw("get_structure "),
+                    Span::styled(
                         self.descriptors.get(*structure).pretty_name(),
-                        format_register(register, self.root_term)
-                    )
-                }
+                        Style::default().fg(Color::LightRed),
+                    ),
+                    Span::raw(", "),
+                    format_register(register),
+                ]),
                 Instruction::GetValue {
                     argument_register,
                     value_register,
-                } => {
-                    format!(
-                        "get_value {}, {}",
-                        format_register(value_register, self.root_term),
-                        format_register(argument_register, self.root_term),
-                    )
-                }
+                } => Line::from(vec![
+                    Span::raw("get_value "),
+                    format_register(value_register),
+                    Span::raw(", "),
+                    format_register(argument_register),
+                ]),
                 Instruction::GetVariable {
                     argument_register,
                     variable_register,
-                } => {
-                    format!(
-                        "get_variable {}, {}",
-                        format_register(variable_register, self.root_term),
-                        format_register(argument_register, self.root_term),
-                    )
-                }
+                } => Line::from(vec![
+                    Span::raw("get_variable "),
+                    format_register(variable_register),
+                    Span::raw(", "),
+                    format_register(argument_register),
+                ]),
 
-                Instruction::UnifyVariable { register } => {
-                    format!(
-                        "unify_variable {}",
-                        format_register(register, self.root_term)
-                    )
-                }
+                Instruction::UnifyVariable { register } => Line::from(vec![
+                    Span::raw("unify_variable "),
+                    format_register(register),
+                ]),
                 Instruction::UnifyValue { register } => {
-                    format!("unify_value {}", format_register(register, self.root_term))
+                    Line::from(vec![Span::raw("unify_value "), format_register(register)])
                 }
-                Instruction::Proceed => {
-                    format!("proceed")
-                }
-                Instruction::Call { address } => {
-                    format!("call {}", address + 1)
-                }
+                Instruction::Proceed => Line::from(vec![Span::raw("proceed")]),
+                Instruction::Call { address } => Line::from(vec![
+                    Span::raw("call "),
+                    match &self.instructions[*address] {
+                        Instruction::DebugComment { message } => {
+                            Span::styled(message.to_string(), Style::default().fg(Color::LightRed))
+                        }
+                        _ => Span::raw((address + 1).to_string()),
+                    },
+                ]),
+                Instruction::Allocate { variables } => Line::from(vec![
+                    Span::raw("allocate "),
+                    Span::styled(
+                        format!("{}", variables),
+                        Style::default().fg(Color::Magenta),
+                    ),
+                ]),
+                Instruction::Deallocate => Line::from(vec![Span::raw("deallocate")]),
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
 
         // ----------- Pre-compute some invariants ---------
-        let mut lines: Vec<String> = text
-            .split('\n')
-            .map(|l| l.replace('\t', &" ".repeat(tab_width)))
-            .collect();
-        // keep one empty element when the string ends with '\n'
-        if text.ends_with('\n') {
-            lines.push(String::new());
-        }
         let total = lines.len() as u16;
 
         // clamp scroll to valid range
@@ -165,7 +175,7 @@ impl<'a> StatefulWidget for InstructionView<'a> {
             }
 
             let with_active_style = |style: Style| {
-                if self.interpreter.instruction_index == row {
+                if self.interpreter.instruction_index == idx as usize {
                     style.bg(Color::LightGreen).fg(Color::Black)
                 } else {
                     style
@@ -173,7 +183,7 @@ impl<'a> StatefulWidget for InstructionView<'a> {
             };
 
             let y = area.y + row as u16;
-            let indicator = if self.interpreter.instruction_index == row {
+            let indicator = if self.interpreter.instruction_index == idx as usize {
                 " ▶ ".to_string()
             } else {
                 "   ".to_string()
@@ -189,25 +199,60 @@ impl<'a> StatefulWidget for InstructionView<'a> {
             let ln = format!("{:>width$} ", idx + 1, width = no_digits); // right-aligned
             buf.set_stringn(area.x + 3, y, &ln, gutter, with_active_style(line_no_style)); // number + space
 
-            let content = &lines[idx as usize];
-            // cut to fit – account for real glyph widths
-            let mut used = 0;
-            let mut rendered = String::new();
-            for g in content.graphemes(true) {
-                let w = UnicodeWidthStr::width(g);
-                if used + w > text_cols as usize {
-                    break;
+            let line = &lines[idx as usize];
+            // Apply active style to all spans in the line
+            let styled_line = if self.interpreter.instruction_index == idx as usize {
+                Line::from(
+                    line.spans
+                        .iter()
+                        .map(|span| {
+                            Span::styled(
+                                span.content.clone(),
+                                span.style.bg(Color::LightGreen).fg(Color::Black),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                line.clone()
+            };
+
+            // Render the styled line with proper width handling
+            let line_width = styled_line.width();
+            if line_width <= text_cols as usize {
+                buf.set_line(area.x + gutter as u16 + 3, y, &styled_line, text_cols);
+            } else {
+                // Truncate if too long - we'll need to implement proper truncation for spans
+                let mut truncated_spans = Vec::new();
+                let mut used_width = 0;
+                for span in &styled_line.spans {
+                    let span_width = UnicodeWidthStr::width(span.content.as_ref());
+                    if used_width + span_width <= text_cols as usize {
+                        truncated_spans.push(span.clone());
+                        used_width += span_width;
+                    } else if used_width < text_cols as usize {
+                        // Partial span
+                        let remaining = text_cols as usize - used_width;
+                        let mut truncated_content = String::new();
+                        let mut current_width = 0;
+                        for g in span.content.graphemes(true) {
+                            let g_width = UnicodeWidthStr::width(g);
+                            if current_width + g_width <= remaining {
+                                truncated_content.push_str(g);
+                                current_width += g_width;
+                            } else {
+                                break;
+                            }
+                        }
+                        truncated_spans.push(Span::styled(truncated_content, span.style));
+                        break;
+                    } else {
+                        break;
+                    }
                 }
-                rendered.push_str(g);
-                used += w;
+                let truncated_line = Line::from(truncated_spans);
+                buf.set_line(area.x + gutter as u16 + 3, y, &truncated_line, text_cols);
             }
-            buf.set_stringn(
-                area.x + gutter as u16 + 3,
-                y,
-                &rendered,
-                text_cols as usize,
-                with_active_style(style),
-            );
         }
 
         // ---------- Draw the scrollbar ----------

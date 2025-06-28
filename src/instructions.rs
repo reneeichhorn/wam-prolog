@@ -2,7 +2,21 @@
 pub struct DescriptorId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RegisterId(pub usize);
+pub enum RegisterId {
+    Argument(usize),
+    Temporary(usize),
+    Permanent(usize),
+}
+
+impl RegisterId {
+    pub fn index_num(&self) -> usize {
+        match self {
+            RegisterId::Argument(index) => *index,
+            RegisterId::Temporary(index) => *index,
+            RegisterId::Permanent(index) => *index,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
@@ -51,5 +65,9 @@ pub enum Instruction {
     Call {
         address: usize,
     },
+    Allocate {
+        variables: usize,
+    },
+    Deallocate,
     Proceed,
 }

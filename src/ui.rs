@@ -14,8 +14,8 @@ use crate::{
     compiler::{CompileArtifact, Compiler, ProgramTarget, QueryTarget},
     descriptor::{self, DescriptorAllocator},
     instructions::{DescriptorId, RegisterId},
-    interpreter::{Cell, Interpreter},
-    parsing::{AbstractTerm, parse},
+    interpreter::{Cell, InspectionResult, InspectionView, Interpreter},
+    parsing::{AbstractProgram, AbstractTerm, parse},
     ui::{
         instructionview::{InstructionView, InstructionViewState, format_register},
         textview::{TextView, TextViewState},
@@ -28,14 +28,13 @@ mod textview;
 #[derive(Debug)]
 pub struct App {
     query: String,
-    ast: AbstractTerm,
-    program: String,
-    program_ast: AbstractTerm,
+    ast: AbstractProgram,
+    program: Vec<String>,
+    program_ast: Vec<AbstractProgram>,
     instructions: Vec<crate::instructions::Instruction>,
     interpreter: Interpreter,
     compiler: Compiler,
     compile_artifact_query: CompileArtifact,
-    compile_artifact_program: CompileArtifact,
     counter: u8,
     show_ast: bool,
     show_ast_program: bool,
@@ -44,34 +43,43 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(query_str: String, program_str: String) -> Result<Self> {
-        let query = parse(&query_str)?;
-        let program = parse(&program_str)?;
-
+    pub fn new(query_str: String, program_str: &[&str]) -> Result<Self> {
         let mut compiler = Compiler::new();
 
-        let compile_artifact_program = compiler.add_fact(&program);
+        let program = program_str
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>();
+
+        let program_ast = program
+            .iter()
+            .map(|a| parse(a))
+            .collect::<Result<Vec<AbstractProgram>>>()?;
+
+        for abstract_program in &program_ast {
+            compiler.add_program(abstract_program);
+        }
+
+        let query = parse(&query_str)?;
         let compile_artifact_query = compiler.compile(&query);
 
         let instructions = compile_artifact_query.instructions.clone();
 
         let interpreter = Interpreter::new(
             instructions.clone(),
-            compile_artifact_query
-                .registers
-                .len()
-                .max(compile_artifact_program.registers.len()),
+            compile_artifact_query.start_instruction_index,
+            compile_artifact_query.max_registers,
             compiler.descriptor_allocator.descriptors.clone(),
+            &compile_artifact_query.inspection_variables,
         );
 
         Ok(Self {
             query: query_str,
             ast: query,
-            program: program_str,
-            program_ast: program,
+            program,
+            program_ast,
             interpreter,
             instructions,
-            compile_artifact_program,
             compile_artifact_query,
             compiler,
             ast_state: TextViewState::default(),
@@ -102,14 +110,11 @@ impl App {
                 .padding(ratatui::widgets::Padding::proportional(1));
 
             let text_view = TextView {
-                text: &format!(
-                    "{:#?}",
-                    if self.show_ast {
-                        &self.ast
-                    } else {
-                        &self.program_ast
-                    }
-                ),
+                text: if self.show_ast {
+                    &format!("{:#?}", &self.ast)
+                } else {
+                    &format!("{:#?}", &self.program_ast)
+                },
                 tab_width: 2,
                 style: ratatui::style::Style::default().fg(Color::White),
                 line_no_style: ratatui::style::Style::default().fg(Color::Gray),
@@ -152,8 +157,10 @@ impl App {
             KeyCode::Char('r') => {
                 self.interpreter = Interpreter::new(
                     self.instructions.clone(),
+                    self.compile_artifact_query.start_instruction_index,
                     self.interpreter.registers.len(),
                     self.compiler.descriptor_allocator.descriptors.clone(),
+                    &self.compile_artifact_query.inspection_variables,
                 );
             }
             KeyCode::Left => self.decrement_counter(),
@@ -238,7 +245,7 @@ impl Widget for &mut App {
 
         let right_side_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Fill(1), Constraint::Fill(1)])
+            .constraints(vec![Constraint::Fill(2), Constraint::Fill(1)])
             .split(main_layout[2]);
 
         // Instructions view
@@ -257,7 +264,6 @@ impl Widget for &mut App {
             instructions: &self.instructions,
             interpreter: &self.interpreter,
             descriptors: &self.compiler.descriptor_allocator,
-            root_term: &self.ast,
         }
         .render(
             block.inner(main_layout[0]),
@@ -333,14 +339,10 @@ impl Widget for &mut App {
             &mut TextViewState::default(),
         );
 
-        // Right side register view
-        let registers_text = format_registers(
-            &self.compile_artifact_program.registers,
-            &self.compiler.descriptor_allocator,
-            &self.ast,
-        );
+        // Rigth right side environment
+        let globals_text = format!("{:#?}", self.interpreter.environment_stack.inspect());
         let block = Block::bordered()
-            .title(" Register Allocation View (Program) ")
+            .title(" Environment Stack ")
             .padding(ratatui::widgets::Padding::proportional(1));
         block.clone().render(right_side_layout[0], buf);
         TextView {
@@ -348,7 +350,7 @@ impl Widget for &mut App {
             style: ratatui::style::Style::default().fg(Color::White),
             tab_width: 2,
             start_line: 1,
-            text: &registers_text,
+            text: &globals_text,
         }
         .render(
             block.inner(right_side_layout[0]),
@@ -356,13 +358,13 @@ impl Widget for &mut App {
             &mut TextViewState::default(),
         );
 
-        let registers_text = format_registers(
-            &self.compile_artifact_query.registers,
+        // Rigth right side solution
+        let globals_text = format_inspection(
+            self.interpreter.inspect(),
             &self.compiler.descriptor_allocator,
-            &self.program_ast,
         );
         let block = Block::bordered()
-            .title(" Register Allocation View (Query) ")
+            .title(" Solutions ")
             .padding(ratatui::widgets::Padding::proportional(1));
         block.clone().render(right_side_layout[1], buf);
         TextView {
@@ -370,7 +372,7 @@ impl Widget for &mut App {
             style: ratatui::style::Style::default().fg(Color::White),
             tab_width: 2,
             start_line: 1,
-            text: &registers_text,
+            text: &globals_text,
         }
         .render(
             block.inner(right_side_layout[1]),
@@ -388,7 +390,7 @@ impl Widget for &mut App {
             ])))
             .render(layout[1], buf);
 
-        Paragraph::new(Line::from(self.program.clone()))
+        Paragraph::new(Line::from(self.program.join("\n").clone()))
             .centered()
             .block(Block::bordered().title(Line::from(vec![
                 " Program - press ".into(),
@@ -407,23 +409,35 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     area
 }
 
-fn format_registers(
-    registers: &[DescriptorId],
-    descriptors: &DescriptorAllocator,
-    term: &AbstractTerm,
-) -> String {
-    let formatted_cells = registers
-        .iter()
-        .enumerate()
-        .map(|(i, descriptor_id)| {
-            format!(
-                "{}:  {}",
-                format_register(&RegisterId(i), term),
-                descriptors.get(*descriptor_id).pretty_name()
-            )
-        })
-        .collect::<Vec<_>>();
-    formatted_cells.join("\n")
+fn format_inspection_view(view: &InspectionView, descriptors: &DescriptorAllocator) -> String {
+    match view {
+        InspectionView::Undefined => "undefined".to_string(),
+        InspectionView::UnboundVariable { index } => format!("_{}", index),
+        InspectionView::Structure {
+            descriptor_id,
+            arguments,
+        } => {
+            let inner_name = descriptors.get(*descriptor_id).pretty_name();
+            let args = arguments
+                .iter()
+                .map(|i| format_inspection_view(i, descriptors))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({})", inner_name, args)
+        }
+    }
+}
+
+fn format_inspection(result: InspectionResult, descriptors: &DescriptorAllocator) -> String {
+    let mut output = String::new();
+
+    for (id, variable) in result.variables {
+        let name = descriptors.get(id).pretty_name();
+        let value = format_inspection_view(&variable, descriptors);
+        output += &format!("{} = {}\n", name, value);
+    }
+
+    output
 }
 
 fn format_cells(cells: &[Cell], descriptors: &DescriptorAllocator) -> String {

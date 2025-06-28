@@ -1,12 +1,17 @@
 use std::collections::{HashSet, VecDeque};
 
-use crate::{descriptor::DescriptorIdentifier, parsing::AbstractTerm};
+use crate::parsing::AbstractTerm;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AbstractTermItem<'a> {
     pub term: &'a AbstractTerm,
     pub level: usize,
     pub argument_index: usize,
+    pub id: usize,
+}
+
+pub fn generate_term_id(parent: usize, argument_index: usize) -> usize {
+    parent << 4 | argument_index
 }
 
 // Breadth-first iterator without root node
@@ -21,6 +26,7 @@ impl<'a> FactIterator<'a> {
             term: root,
             level: 0,
             argument_index: 0,
+            id: 1,
         });
         Self { queue }
     }
@@ -37,6 +43,7 @@ impl<'a> Iterator for FactIterator<'a> {
                     self.queue.push_back(AbstractTermItem {
                         term: sub_term,
                         level: term.level + 1,
+                        id: generate_term_id(term.id, argument_index),
                         argument_index,
                     });
                 }
@@ -50,17 +57,22 @@ impl<'a> Iterator for FactIterator<'a> {
     }
 }
 
-// Post-order iterator
+// Post-order iterator, returns first level in order
 pub struct QueryIterator<'a> {
     queue: VecDeque<AbstractTermItem<'a>>,
-    declared: HashSet<DescriptorIdentifier>,
+    declared: HashSet<usize>,
 }
 
 impl<'a> QueryIterator<'a> {
     pub fn new(root: &'a AbstractTerm) -> Self {
         let declared = HashSet::new();
-        let queue = FactIterator::new(root).collect::<VecDeque<_>>();
-        println!("Queue: {:?}", queue);
+        let mut queue = VecDeque::new();
+        queue.push_back(AbstractTermItem {
+            term: root,
+            level: 0,
+            id: 1,
+            argument_index: 0,
+        });
         Self { queue, declared }
     }
 }
@@ -72,19 +84,28 @@ impl<'a> Iterator for QueryIterator<'a> {
         while let Some(term) = self.queue.pop_front() {
             match term.term {
                 AbstractTerm::Structure(_, sub_terms) => {
-                    let has_declared_all = sub_terms.iter().all(|sub_term| {
-                        self.declared
-                            .contains(&DescriptorIdentifier::from(sub_term))
+                    let has_declared_all = sub_terms.iter().enumerate().all(|(index, sub_term)| {
+                        self.declared.contains(&generate_term_id(term.id, index))
                     });
                     if has_declared_all {
-                        self.declared.insert(DescriptorIdentifier::from(term.term));
-                        return Some(term);
+                        self.declared.insert(term.id);
+                        if term.level > 0 {
+                            return Some(term);
+                        }
                     } else {
-                        self.queue.push_back(term);
+                        self.queue.push_front(term.clone());
+                        for (argument_index, sub_term) in sub_terms.iter().enumerate().rev() {
+                            self.queue.push_front(AbstractTermItem {
+                                term: sub_term,
+                                level: term.level + 1,
+                                id: generate_term_id(term.id, argument_index),
+                                argument_index,
+                            });
+                        }
                     }
                 }
                 _ => {
-                    self.declared.insert(DescriptorIdentifier::from(term.term));
+                    self.declared.insert(term.id);
                     return Some(term);
                 }
             }
@@ -104,6 +125,7 @@ impl<'a> DepthFirstIterator<'a> {
         stack.push(AbstractTermItem {
             term: root,
             level: 0,
+            id: 1,
             argument_index: 0,
         });
         Self { stack }
@@ -122,6 +144,7 @@ impl<'a> Iterator for DepthFirstIterator<'a> {
                     self.stack.push(AbstractTermItem {
                         term: sub_term,
                         level: term.level + 1,
+                        id: generate_term_id(term.id, argument_index),
                         argument_index,
                     });
                 }

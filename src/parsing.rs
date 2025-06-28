@@ -5,14 +5,40 @@ use pest_derive::Parser;
 #[derive(Parser)]
 #[grammar = "syntax.pest"]
 pub struct PrologParser;
-pub fn parse(input: &str) -> Result<AbstractTerm> {
-    let pairs = PrologParser::parse(Rule::term, input)?;
+pub fn parse(input: &str) -> Result<AbstractProgram> {
+    let pairs = PrologParser::parse(Rule::program, input)?;
     let pair = pairs
         .into_iter()
         .next()
         .ok_or_else(|| anyhow::anyhow!("No term found"))?;
-    let term = parse_term(pair)?;
+    let term = parse_program(pair)?;
     Ok(term)
+}
+
+fn parse_program(pair: Pair<'_, Rule>) -> Result<AbstractProgram> {
+    match pair.as_rule() {
+        Rule::program => {
+            let mut inner = pair.into_inner();
+            let pair = inner.next().unwrap();
+            parse_program(pair)
+        }
+        Rule::fact => {
+            let mut inner_pairs = pair.into_inner();
+            let pair = inner_pairs.next().unwrap();
+            Ok(AbstractProgram::Fact(AbstractFact {
+                term: parse_term(pair)?,
+            }))
+        }
+        Rule::rule => {
+            let mut inner_pairs = pair.into_inner();
+            let head = parse_term(inner_pairs.next().unwrap())?;
+            let goals = inner_pairs
+                .map(|pair| parse_term(pair))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(AbstractProgram::Rule(AbstractRule { head, goals }))
+        }
+        _ => panic!("Unexpected rule: {:?}", pair.as_rule()),
+    }
 }
 
 fn parse_term(pair: Pair<'_, Rule>) -> Result<AbstractTerm> {
@@ -49,6 +75,33 @@ pub enum AbstractTerm {
     Variable(String),
     Constant(String),
     Structure(String, Vec<AbstractTerm>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AbstractProgram {
+    Fact(AbstractFact),
+    Rule(AbstractRule),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbstractRule {
+    pub head: AbstractTerm,
+    pub goals: Vec<AbstractTerm>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbstractFact {
+    pub term: AbstractTerm,
+}
+
+impl AbstractFact {
+    pub fn arity(&self) -> usize {
+        self.term.arity()
+    }
+
+    pub fn name(&self) -> &str {
+        self.term.name()
+    }
 }
 
 impl AbstractTerm {
