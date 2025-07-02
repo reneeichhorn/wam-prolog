@@ -64,10 +64,19 @@ pub enum Instruction {
     // Control Instructions ----------------------------
     Call {
         address: usize,
+        functor: DescriptorId,
     },
     Allocate {
         variables: usize,
     },
     Deallocate,
     Proceed,
+    TryMeElse {
+        else_address: usize,
+    },
+    RetryMeElse {
+        else_address: usize,
+    },
+    TrustMe,
+    NoOp,
 }

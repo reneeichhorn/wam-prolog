@@ -133,7 +133,6 @@ impl RegistryAllocator {
         let iter = T::get_ordered_iterator(term);
 
         for term in iter {
-            println!("proc essing term for allocation {:#?}", term);
             let needs_argument_register = term.level == 1;
             let needs_register = match term.term {
                 AbstractTerm::Variable(_) => true,
@@ -254,6 +253,7 @@ struct IntermediateCompileArtifact {
 pub struct Compiler {
     instructions: Vec<Instruction>,
     fact_call_map: HashMap<DescriptorId, usize>,
+    last_fact_call_map: HashMap<DescriptorId, usize>,
     pub descriptor_allocator: DescriptorAllocator,
     max_registers: usize,
 }
@@ -263,6 +263,7 @@ impl Compiler {
         Compiler {
             instructions: Vec::new(),
             fact_call_map: HashMap::new(),
+            last_fact_call_map: HashMap::new(),
             descriptor_allocator: DescriptorAllocator::default(),
             max_registers: 0,
         }
@@ -272,6 +273,7 @@ impl Compiler {
         self.max_registers = 0;
         self.instructions.clear();
         self.fact_call_map.clear();
+        self.last_fact_call_map.clear();
         self.descriptor_allocator = DescriptorAllocator::default();
     }
 
@@ -282,19 +284,56 @@ impl Compiler {
         }
     }
 
+    fn get_callable_reserved_instruction(&self, root_descriptor_id: DescriptorId) -> Instruction {
+        if self.fact_call_map.contains_key(&root_descriptor_id) {
+            Instruction::TrustMe
+        } else {
+            Instruction::NoOp
+        }
+    }
+
+    fn register_callable(&mut self, root_descriptor_id: DescriptorId, instruction_start: usize) {
+        if let Some(address) = self.fact_call_map.get(&root_descriptor_id) {
+            let reserved_instruction = &mut self.instructions[*address + 1];
+            match reserved_instruction {
+                Instruction::NoOp => {
+                    *reserved_instruction = Instruction::TryMeElse {
+                        else_address: instruction_start,
+                    }
+                }
+                Instruction::TryMeElse { .. } => {
+                    let last_fact_address =
+                        self.last_fact_call_map.get(&root_descriptor_id).unwrap();
+                    let last_reserved_address = &mut self.instructions[*last_fact_address + 1];
+                    *last_reserved_address = Instruction::RetryMeElse {
+                        else_address: instruction_start,
+                    };
+                }
+                _ => panic!("Unexpected instruction: {:?}", reserved_instruction),
+            }
+            self.last_fact_call_map
+                .insert(root_descriptor_id, instruction_start);
+        } else {
+            self.fact_call_map
+                .insert(root_descriptor_id, instruction_start);
+        }
+    }
+
     pub fn add_rule(&mut self, rule: &AbstractRule) {
         let permanent_variables =
             RegistryAllocator::prepare_permanent_variables(&rule, &mut self.descriptor_allocator);
 
         let root_descriptor_id = self.descriptor_allocator.get_or_set(&rule.head);
-        self.fact_call_map
-            .insert(root_descriptor_id, self.instructions.len());
+        let instruction_start = self.instructions.len();
 
         let mut processed = HashSet::<DescriptorId>::new();
 
         self.instructions.push(Instruction::DebugComment {
             message: Box::new(format!("{}/{} (head)", rule.head.name(), rule.head.arity())),
         });
+        // reserve noop for potential, choice point instruction.
+        self.instructions
+            .push(self.get_callable_reserved_instruction(root_descriptor_id));
         self.instructions.push(Instruction::Allocate {
             variables: permanent_variables.len(),
         });
@@ -324,20 +363,25 @@ impl Compiler {
                 .expect("term to exist");
             self.instructions.push(Instruction::Call {
                 address: *call_address,
+                functor: descriptor_id,
             });
         }
 
         self.instructions.push(Instruction::Deallocate);
+
+        self.register_callable(root_descriptor_id, instruction_start);
     }
 
     pub fn add_fact(&mut self, fact: &AbstractFact) {
         let root_descriptor_id = self.descriptor_allocator.get_or_set(&fact.term);
-        self.fact_call_map
-            .insert(root_descriptor_id, self.instructions.len());
+        let instruction_start = self.instructions.len();
 
         self.instructions.push(Instruction::DebugComment {
             message: Box::new(format!("{}/{}", fact.name(), fact.arity())),
         });
+        // reserve noop for potential, choice point instruction.
+        self.instructions
+            .push(self.get_callable_reserved_instruction(root_descriptor_id));
 
         let artifact = self.compile_for_target::<ProgramTarget>(
             &fact.term,
@@ -347,6 +391,8 @@ impl Compiler {
         self.instructions.extend(artifact.instructions.clone());
 
         self.instructions.push(Instruction::Proceed);
+
+        self.register_callable(root_descriptor_id, instruction_start);
     }
 
     pub fn compile(&mut self, query: &AbstractProgram) -> CompileArtifact {
@@ -368,6 +414,7 @@ impl Compiler {
         self.instructions.extend(artifact.instructions);
         self.instructions.push(Instruction::Call {
             address: call_address,
+            functor: root_descriptor_id,
         });
 
         let mut unique_variables = HashSet::new();
@@ -412,13 +459,7 @@ impl Compiler {
             RegistryAllocator::new::<T>(root, &mut self.descriptor_allocator, permanent_variables);
         let iter = T::get_ordered_iterator(root);
 
-        println!("========= ITER =============");
         for term in iter {
-            println!("Processing iter: {:#?}", term);
-            println!(
-                "Processing iter register: {:#?}",
-                registry_allocator.registry_map
-            );
             let descriptor_id = self.descriptor_allocator.get_or_set(term.term);
             let register_allocation =
                 registry_allocator.get_register(&term, &mut self.descriptor_allocator);
@@ -455,10 +496,6 @@ impl Compiler {
                     for (sub_term_index, sub_term) in sub_terms.iter().enumerate() {
                         let sub_descriptor_id = self.descriptor_allocator.get_or_set(sub_term);
 
-                        println!(
-                            "Processing inner sub term: {:#?}\nterm id: {}, index: {}",
-                            sub_term_index, term.id, sub_term_index
-                        );
                         let sub_register_allocation = registry_allocator.get_register_raw(
                             sub_term,
                             term.id,
@@ -497,8 +534,6 @@ impl Compiler {
         self.max_registers = self
             .max_registers
             .max(registry_allocator.registry_ordered_list.len());
-
-        println!("Registers: {:#?}", registry_allocator.registry_map);
 
         IntermediateCompileArtifact {
             instructions,

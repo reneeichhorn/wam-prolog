@@ -14,7 +14,7 @@ use crate::{
     compiler::{CompileArtifact, Compiler, ProgramTarget, QueryTarget},
     descriptor::{self, DescriptorAllocator},
     instructions::{DescriptorId, RegisterId},
-    interpreter::{Cell, InspectionResult, InspectionView, Interpreter},
+    interpreter::{Cell, CellAddress, InspectionResult, InspectionView, Interpreter},
     parsing::{AbstractProgram, AbstractTerm, parse},
     ui::{
         instructionview::{InstructionView, InstructionViewState, format_register},
@@ -154,6 +154,9 @@ impl App {
             KeyCode::Enter => {
                 self.interpreter.step();
             }
+            KeyCode::Char('b') => {
+                self.interpreter.try_backtrack();
+            }
             KeyCode::Char('r') => {
                 self.interpreter = Interpreter::new(
                     self.instructions.clone(),
@@ -245,7 +248,11 @@ impl Widget for &mut App {
 
         let right_side_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Fill(2), Constraint::Fill(1)])
+            .constraints(vec![
+                Constraint::Fill(2),
+                Constraint::Fill(2),
+                Constraint::Fill(1),
+            ])
             .split(main_layout[2]);
 
         // Instructions view
@@ -253,6 +260,8 @@ impl Widget for &mut App {
             .title(Line::from(vec![
                 " Instruction View - press ".into(),
                 "<Enter>".blue().bold(),
+                " to backtrack, press ".into(),
+                "<B>".blue().bold(),
                 " to step, press ".into(),
                 "<R>".blue().bold(),
                 " to reset ".into(),
@@ -317,10 +326,20 @@ impl Widget for &mut App {
 
         // Rigth side globals
         let globals_text = format!(
-            "Exec State: {:?}\nMode: {:?}\nS (next subterm): {}",
+            "Exec State: {:?}\nMode: {:?}\nS (next subterm): {}\nTrail: {}\nProceed: {}",
             self.interpreter.execution_state,
             self.interpreter.mode,
-            self.interpreter.next_sub_term_address
+            self.interpreter.next_sub_term_address,
+            self.interpreter
+                .trail
+                .iter()
+                .map(|i| match i {
+                    CellAddress::GlobalStack { index } => format!("Stack({})", index),
+                    CellAddress::Register { index } => format_register(index).content.to_string(),
+                })
+                .collect::<Vec<String>>()
+                .join(", "),
+            self.interpreter.proceed_return_address + 1,
         );
         let block = Block::bordered()
             .title(" Globals ")
@@ -358,13 +377,10 @@ impl Widget for &mut App {
             &mut TextViewState::default(),
         );
 
-        // Rigth right side solution
-        let globals_text = format_inspection(
-            self.interpreter.inspect(),
-            &self.compiler.descriptor_allocator,
-        );
+        // Choice point
+        let globals_text = format!("{:#?}", self.interpreter.choice_point_stack.inspect());
         let block = Block::bordered()
-            .title(" Solutions ")
+            .title(" Choice PointStack ")
             .padding(ratatui::widgets::Padding::proportional(1));
         block.clone().render(right_side_layout[1], buf);
         TextView {
@@ -376,6 +392,28 @@ impl Widget for &mut App {
         }
         .render(
             block.inner(right_side_layout[1]),
+            buf,
+            &mut TextViewState::default(),
+        );
+
+        // Rigth right side solution
+        let globals_text = format_inspection(
+            self.interpreter.inspect(),
+            &self.compiler.descriptor_allocator,
+        );
+        let block = Block::bordered()
+            .title(" Solutions ")
+            .padding(ratatui::widgets::Padding::proportional(1));
+        block.clone().render(right_side_layout[2], buf);
+        TextView {
+            line_no_style: ratatui::style::Style::default().fg(Color::Gray),
+            style: ratatui::style::Style::default().fg(Color::White),
+            tab_width: 2,
+            start_line: 1,
+            text: &globals_text,
+        }
+        .render(
+            block.inner(right_side_layout[2]),
             buf,
             &mut TextViewState::default(),
         );
@@ -443,14 +481,18 @@ fn format_inspection(result: InspectionResult, descriptors: &DescriptorAllocator
 fn format_cells(cells: &[Cell], descriptors: &DescriptorAllocator) -> String {
     let formatted_cells = cells
         .iter()
-        .map(|cell| match cell {
-            Cell::Undefined => "undefined".to_string(),
-            Cell::Reference(re) => format!("REF({})", re),
-            Cell::StructureRef(struc) => format!("STR({})", struc),
-            Cell::Structure(struc) => {
-                format!("{}", descriptors.get(*struc).pretty_name())
-            }
-        })
+        .map(|cell| format_cell(cell, descriptors))
         .collect::<Vec<_>>();
     formatted_cells.join("\n")
+}
+
+fn format_cell(cell: &Cell, descriptors: &DescriptorAllocator) -> String {
+    match cell {
+        Cell::Undefined => "undefined".to_string(),
+        Cell::Reference(re) => format!("REF({})", re),
+        Cell::StructureRef(struc) => format!("STR({})", struc),
+        Cell::Structure(struc) => {
+            format!("{}", descriptors.get(*struc).pretty_name())
+        }
+    }
 }

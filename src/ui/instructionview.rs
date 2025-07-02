@@ -133,7 +133,7 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                     Line::from(vec![Span::raw("unify_value "), format_register(register)])
                 }
                 Instruction::Proceed => Line::from(vec![Span::raw("proceed")]),
-                Instruction::Call { address } => Line::from(vec![
+                Instruction::Call { address, .. } => Line::from(vec![
                     Span::raw("call "),
                     match &self.instructions[*address] {
                         Instruction::DebugComment { message } => {
@@ -142,6 +142,26 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                         _ => Span::raw((address + 1).to_string()),
                     },
                 ]),
+                Instruction::TryMeElse { else_address } => Line::from(vec![
+                    Span::raw("try_me_else "),
+                    match &self.instructions[*else_address] {
+                        Instruction::DebugComment { message } => {
+                            Span::styled(message.to_string(), Style::default().fg(Color::LightRed))
+                        }
+                        _ => Span::raw((else_address + 1).to_string()),
+                    },
+                ]),
+                Instruction::RetryMeElse { else_address } => Line::from(vec![
+                    Span::raw("retry_me_else "),
+                    match &self.instructions[*else_address] {
+                        Instruction::DebugComment { message } => {
+                            Span::styled(message.to_string(), Style::default().fg(Color::LightRed))
+                        }
+                        _ => Span::raw((else_address + 1).to_string()),
+                    },
+                ]),
+                Instruction::TrustMe => Line::from(vec![Span::raw("trust_me")]),
+                Instruction::NoOp => Line::from(vec![Span::raw("no_op")]),
                 Instruction::Allocate { variables } => Line::from(vec![
                     Span::raw("allocate "),
                     Span::styled(

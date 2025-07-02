@@ -1,7 +1,7 @@
 WHITESPACE = _{ " " }
 
-term_variable = { ASCII_ALPHA_UPPER+ ~ ASCII_ALPHANUMERIC* }
-term_constant = { ASCII_ALPHA_LOWER+ ~ ASCII_ALPHANUMERIC* }
+term_variable = { ASCII_ALPHA_UPPER+ ~ (ASCII_ALPHANUMERIC | "_")* }
+term_constant = { ASCII_ALPHA_LOWER+ ~ (ASCII_ALPHANUMERIC | "_")* }
 term_structure = { term_constant ~ "(" ~ term ~ ("," ~ term)* ~ ")" }
 term = { term_structure | term_variable | term_constant}
 

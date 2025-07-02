@@ -1,24 +1,33 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+};
+
+use pest::Stack;
 
 use crate::{
     descriptor::TermDescriptor,
     instructions::{DescriptorId, Instruction, RegisterId},
-    interpreter::environment::EnvironmentStack,
+    interpreter::{choicepoint::ChoicePointStack, environment::EnvironmentStack},
 };
 
+mod choicepoint;
 mod environment;
 
 #[derive(Clone, Debug)]
 pub struct Interpreter {
     pub global_stack: Vec<Cell>,
     pub registers: Vec<Cell>,
+    pub trail: Vec<CellAddress>,
     instructions: Vec<Instruction>,
     pub instruction_index: usize,
     pub mode: Mode,
     pub next_sub_term_address: usize,
     pub execution_state: ExecutionState,
     pub environment_stack: EnvironmentStack,
+    pub choice_point_stack: ChoicePointStack,
     pub proceed_return_address: usize,
+    pub current_functor: DescriptorId,
     inspection_watch: Vec<WatchCell>,
     inspection_set: bool,
     descriptors: Vec<TermDescriptor>,
@@ -97,8 +106,11 @@ impl Interpreter {
         Self {
             global_stack: Vec::with_capacity(1024),
             environment_stack: EnvironmentStack::new(),
+            trail: Vec::with_capacity(1024),
+            choice_point_stack: ChoicePointStack::new(),
             registers: vec![Cell::Undefined; registers],
             instruction_index: start_instruction_index,
+            current_functor: DescriptorId(0),
             proceed_return_address: start_instruction_index,
             execution_state: ExecutionState::Normal,
             mode: Mode::Write,
@@ -169,6 +181,20 @@ impl Interpreter {
         }
     }
 
+    fn try_trail(&mut self, address: CellAddress) {
+        if self.choice_point_stack.is_empty() {
+            return;
+        }
+        let choice_point_stack_address = self.choice_point_stack.get_stack_address();
+
+        match address {
+            CellAddress::GlobalStack { index } if index < choice_point_stack_address => {
+                self.trail.push(address.clone());
+            }
+            _ => {}
+        }
+    }
+
     fn bind_address(&mut self, a: CellAddress, b: CellAddress) {
         let a_value = self.lookup_address(a);
         let b_value = self.lookup_address(b);
@@ -206,6 +232,7 @@ impl Interpreter {
             },
         }
 
+        self.try_trail(target);
         let target = self.lookup_address_mut(target);
         *target = value;
     }
@@ -277,15 +304,42 @@ impl Interpreter {
                         _ => {}
                     }
 
-                    self.execution_state = ExecutionState::Failure;
+                    self.backtrack();
                     break;
                 }
                 _ => {
-                    self.execution_state = ExecutionState::Failure;
+                    self.backtrack();
                     break;
                 }
             }
         }
+    }
+
+    fn unwind_trail(&mut self, range: Range<usize>) {
+        for i in range {
+            let stack_address = self.trail[i];
+            let stack_address_raw = stack_address.index_num();
+            self.global_stack[stack_address_raw] = Cell::Reference(stack_address_raw);
+        }
+    }
+
+    fn backtrack(&mut self) {
+        if self.choice_point_stack.is_empty() {
+            self.execution_state = ExecutionState::Failure;
+            return;
+        }
+
+        let next_address = self.choice_point_stack.get_next_instruction();
+        self.instruction_index = next_address;
+    }
+
+    pub fn try_backtrack(&mut self) -> bool {
+        if self.choice_point_stack.is_empty() || self.execution_state == ExecutionState::Failure {
+            return false;
+        }
+
+        self.backtrack();
+        true
     }
 
     pub fn step(&mut self) -> bool {
@@ -376,7 +430,7 @@ impl Interpreter {
                 let address = self.deref_cell(CellAddress::Register { index: *register });
                 let value = self.lookup_address(address);
                 match value {
-                    Cell::Reference(reference_index) => {
+                    Cell::Reference(_) => {
                         self.global_stack
                             .push(Cell::StructureRef(self.global_stack.len() + 1));
                         self.global_stack.push(Cell::Structure(*structure));
@@ -396,10 +450,12 @@ impl Interpreter {
                             self.next_sub_term_address = structure_addr + 1;
                             self.mode = Mode::Read;
                         } else {
-                            self.execution_state = ExecutionState::Failure;
+                            self.backtrack();
                         }
                     }
-                    _ => self.execution_state = ExecutionState::Failure,
+                    _ => {
+                        self.backtrack();
+                    }
                 }
             }
             Instruction::GetVariable {
@@ -471,9 +527,11 @@ impl Interpreter {
             Instruction::Proceed => {
                 self.instruction_index = self.proceed_return_address;
             }
-            Instruction::Call { address } => {
+            Instruction::Call { address, functor } => {
                 self.proceed_return_address = self.instruction_index;
                 self.instruction_index = *address;
+
+                self.current_functor = *functor;
 
                 // before executing the fact we collect the values of the watched registers.
                 if !self.inspection_set {
@@ -492,6 +550,60 @@ impl Interpreter {
                 self.instruction_index = self.environment_stack.get_continuation();
                 self.environment_stack.pop_environment();
             }
+            Instruction::TryMeElse { else_address } => {
+                let arity = self.descriptors[self.current_functor.0].arity();
+                self.choice_point_stack.push_choice_point(
+                    arity,
+                    self.proceed_return_address,
+                    self.environment_stack.get_current_address(),
+                    *else_address,
+                    self.trail.len(),
+                    self.global_stack.len(),
+                );
+                for i in 0..arity {
+                    let argument = self.registers[i].clone();
+                    *self.choice_point_stack.get_argument_mut(i) = argument.clone();
+                }
+            }
+            Instruction::RetryMeElse { else_address } => {
+                let arity = self.descriptors[self.current_functor.0].arity();
+                for i in 0..arity {
+                    let argument = &mut self.registers[i];
+                    *argument = self.choice_point_stack.get_argument(i).clone();
+                }
+                self.environment_stack
+                    .reset_to(self.choice_point_stack.get_environment_address());
+                self.proceed_return_address = self.choice_point_stack.get_continuation();
+                *self.choice_point_stack.get_next_instruction_mut() = *else_address;
+
+                let trail_address = self.choice_point_stack.get_trail_address();
+                self.unwind_trail(trail_address..self.trail.len());
+                unsafe { self.trail.set_len(trail_address) };
+
+                let stack_address = self.choice_point_stack.get_stack_address();
+                unsafe { self.global_stack.set_len(stack_address) };
+            }
+            Instruction::TrustMe => {
+                let arity = self.descriptors[self.current_functor.0].arity();
+                for i in 0..arity {
+                    let argument = &mut self.registers[i];
+                    *argument = self.choice_point_stack.get_argument(i).clone();
+                }
+
+                self.environment_stack
+                    .reset_to(self.choice_point_stack.get_environment_address());
+                self.proceed_return_address = self.choice_point_stack.get_continuation();
+
+                let trail_address = self.choice_point_stack.get_trail_address();
+                self.unwind_trail(trail_address..self.trail.len());
+                unsafe { self.trail.set_len(trail_address) };
+
+                let stack_address = self.choice_point_stack.get_stack_address();
+                unsafe { self.global_stack.set_len(stack_address) };
+
+                self.choice_point_stack.pop_choice_point();
+            }
+            Instruction::NoOp => {}
         }
 
         true

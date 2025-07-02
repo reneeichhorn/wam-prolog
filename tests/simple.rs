@@ -76,14 +76,36 @@ fn helper_execute_multi(program: &[&str], query: &str) -> Output {
         compiler.descriptor_allocator.descriptors.clone(),
         &artifact.inspection_variables,
     );
-    while interpreter.step() {}
+
+    let mut suceeded_once = false;
+    let mut output = String::new();
+    let mut back_track_count = 0;
+
+    loop {
+        while interpreter.step() {}
+
+        if interpreter.execution_state == ExecutionState::Normal {
+            suceeded_once = true;
+
+            if back_track_count > 0 {
+                output.push_str("\n");
+            }
+
+            output.push_str(&helper_inspection(
+                interpreter.inspect(),
+                &compiler.descriptor_allocator,
+            ));
+        }
+
+        if !interpreter.try_backtrack() {
+            break;
+        }
+
+        back_track_count += 1;
+    }
     Output {
-        success: interpreter.execution_state == ExecutionState::Normal,
-        output: if interpreter.execution_state == ExecutionState::Normal {
-            helper_inspection(interpreter.inspect(), &compiler.descriptor_allocator)
-        } else {
-            String::new()
-        },
+        success: suceeded_once,
+        output,
     }
 }
 
@@ -250,3 +272,43 @@ fn test_rules() {
         "X = f(a), Y = g(b), Z = _4"
     );
 }
+
+#[test]
+fn test_backtracking() {
+    assert_eq!(
+        helper_execute_multi(&["h(x).", "h(y).", "h(z)."], "h(X).").output,
+        "X = x\nX = y\nX = z"
+    );
+
+    let test = r###"
+loves(vincent, mia).
+loves(marcellus, mia).
+loves(pumpkin, honeybunny).
+loves(honeybunny, pumpkin).
+jealous(X, Y) :- loves(X, Z), loves(Y, Z).
+    "###
+    .trim()
+    .split("\n")
+    .collect::<Vec<_>>();
+    assert_eq!(
+        helper_execute_multi(&test, "loves(X, mia).").output,
+        "X = vincent\nX = marcellus"
+    );
+
+    assert_eq!(
+        helper_execute_multi(&test, "jealous(X, Y).").output,
+        "X = vincent, Y = vincent\nX = vincent, Y = marcellus\nX = marcellus, Y = vincent\nX = marcellus, Y = marcellus\nX = pumpkin, Y = pumpkin\nX = honeybunny, Y = honeybunny"
+    );
+}
+
+/*
+#[test]
+fn test_movies() {
+    let file = String::from_utf8(include_bytes!("./movies.pl").to_vec()).unwrap();
+    let test = file.split("\n").collect::<Vec<_>>();
+    assert_eq!(
+        helper_execute_multi(&test, "loves(X, Y).").output,
+        "X = vincent, Y = mia\nX = marcellus, Y = mia\nX = pumpkin, Y = honeybunny\nX = honeybunny, Y = pumpkin"
+    );
+}
+*/

@@ -29,6 +29,23 @@ impl EnvironmentStack {
         }
     }
 
+    pub fn get_current_address(&self) -> usize {
+        self.last_environment_address
+    }
+
+    pub fn reset_to(&mut self, address: usize) {
+        if address == self.last_environment_address {
+            return;
+        }
+
+        self.last_environment_address = address;
+        let head = self.get_head();
+        let head_size = std::mem::size_of::<EnvironmentHead>();
+        self.next_environment_address = self.last_environment_address
+            + head_size
+            + head.num_variables * std::mem::size_of::<Cell>();
+    }
+
     pub fn push_environment(&mut self, num_variables: usize, continuation_address: usize) {
         let head_size = std::mem::size_of::<EnvironmentHead>();
         let next_head = unsafe {
@@ -56,8 +73,21 @@ impl EnvironmentStack {
             head
         };
         self.last_environment_address = head.previous_environment_address;
-        self.next_environment_address -=
-            head_size + head.num_variables * std::mem::size_of::<Cell>();
+
+        let next_head = self.get_head();
+
+        self.next_environment_address = self.last_environment_address
+            + head_size
+            + next_head.num_variables * std::mem::size_of::<Cell>();
+    }
+
+    fn get_head(&self) -> &EnvironmentHead {
+        let head_size = std::mem::size_of::<EnvironmentHead>();
+        let raw_ptr = self.raw_stack
+            [self.last_environment_address..self.last_environment_address + head_size]
+            .as_ptr();
+        let head = unsafe { std::mem::transmute::<_, &EnvironmentHead>(raw_ptr) };
+        head
     }
 
     pub fn get_variable_mut(&mut self, index: usize) -> &mut Cell {
@@ -81,14 +111,7 @@ impl EnvironmentStack {
     }
 
     pub fn get_continuation(&self) -> usize {
-        let head_size = std::mem::size_of::<EnvironmentHead>();
-        let head = unsafe {
-            let raw_ptr = self.raw_stack
-                [self.last_environment_address..self.last_environment_address + head_size]
-                .as_ptr();
-            let head = std::mem::transmute::<_, &EnvironmentHead>(raw_ptr);
-            head
-        };
+        let head = self.get_head();
         head.continuation_address
     }
 
