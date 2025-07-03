@@ -33,11 +33,18 @@ pub enum Instruction {
         argument_register: RegisterId,
         value_register: RegisterId,
     },
+    PutConstant {
+        constant: DescriptorId,
+        register: RegisterId,
+    },
     SetVariable {
         register: RegisterId,
     },
     SetValue {
         register: RegisterId,
+    },
+    SetConstant {
+        constant: DescriptorId,
     },
     DebugComment {
         message: Box<String>,
@@ -55,11 +62,18 @@ pub enum Instruction {
         argument_register: RegisterId,
         value_register: RegisterId,
     },
+    GetConstant {
+        constant: DescriptorId,
+        register: RegisterId,
+    },
     UnifyVariable {
         register: RegisterId,
     },
     UnifyValue {
         register: RegisterId,
+    },
+    UnifyConstant {
+        constant: DescriptorId,
     },
     // Control Instructions ----------------------------
     Call {

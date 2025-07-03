@@ -1,5 +1,5 @@
 use prolog_wan::{
-    compiler::{Compiler, ProgramTarget, QueryTarget},
+    compiler::Compiler,
     descriptor::DescriptorAllocator,
     interpreter::{ExecutionState, InspectionResult, InspectionView, Interpreter},
     parsing::parse,
@@ -14,6 +14,10 @@ fn helper_inspection_format(view: &InspectionView, descriptors: &DescriptorAlloc
     match view {
         InspectionView::Undefined => "undefined".to_string(),
         InspectionView::UnboundVariable { index } => format!("_{}", index),
+        InspectionView::Constant { descriptor_id } => {
+            let constant_name = descriptors.get(*descriptor_id).name.clone();
+            format!("{}", constant_name)
+        }
         InspectionView::Structure {
             descriptor_id,
             arguments,
@@ -237,7 +241,7 @@ fn test_rules() {
             "p(f(X, Y, Z), g(b), h)."
         )
         .output,
-        "X = f(a), Y = g(b), Z = _4"
+        "X = f(a), Y = g(b), Z = _3"
     );
     assert_eq!(
         helper_execute_multi(
@@ -269,7 +273,7 @@ fn test_rules() {
             "p(f(X, Y, Z), Y, h)."
         )
         .output,
-        "X = f(a), Y = g(b), Z = _4"
+        "X = f(a), Y = g(b), Z = _3"
     );
 }
 

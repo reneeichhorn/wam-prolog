@@ -83,6 +83,15 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                     Span::raw(", "),
                     format_register(argument_register),
                 ]),
+                Instruction::PutConstant { register, constant } => Line::from(vec![
+                    Span::raw("put_constant "),
+                    Span::styled(
+                        self.descriptors.get(*constant).pretty_name(),
+                        Style::default().fg(Color::LightRed),
+                    ),
+                    Span::raw(", "),
+                    format_register(register),
+                ]),
 
                 Instruction::SetVariable { register } => {
                     Line::from(vec![Span::raw("set_variable "), format_register(register)])
@@ -90,6 +99,13 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                 Instruction::SetValue { register } => {
                     Line::from(vec![Span::raw("set_value "), format_register(register)])
                 }
+                Instruction::SetConstant { constant } => Line::from(vec![
+                    Span::raw("set_constant "),
+                    Span::styled(
+                        self.descriptors.get(*constant).pretty_name(),
+                        Style::default().fg(Color::LightRed),
+                    ),
+                ]),
                 Instruction::DebugComment { message } => Line::from(vec![Span::styled(
                     format!(";; {}", message),
                     Style::default().fg(Color::DarkGray),
@@ -124,6 +140,15 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                     Span::raw(", "),
                     format_register(argument_register),
                 ]),
+                Instruction::GetConstant { constant, register } => Line::from(vec![
+                    Span::raw("get_constant "),
+                    Span::styled(
+                        self.descriptors.get(*constant).pretty_name(),
+                        Style::default().fg(Color::LightRed),
+                    ),
+                    Span::raw(", "),
+                    format_register(register),
+                ]),
 
                 Instruction::UnifyVariable { register } => Line::from(vec![
                     Span::raw("unify_variable "),
@@ -132,6 +157,13 @@ impl<'a> StatefulWidget for InstructionView<'a> {
                 Instruction::UnifyValue { register } => {
                     Line::from(vec![Span::raw("unify_value "), format_register(register)])
                 }
+                Instruction::UnifyConstant { constant } => Line::from(vec![
+                    Span::raw("unify_constant "),
+                    Span::styled(
+                        self.descriptors.get(*constant).pretty_name(),
+                        Style::default().fg(Color::LightRed),
+                    ),
+                ]),
                 Instruction::Proceed => Line::from(vec![Span::raw("proceed")]),
                 Instruction::Call { address, .. } => Line::from(vec![
                     Span::raw("call "),

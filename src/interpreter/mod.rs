@@ -75,6 +75,7 @@ impl CellAddress {
 pub enum Cell {
     StructureRef(usize),
     Structure(DescriptorId),
+    Constant(DescriptorId),
     Reference(usize),
     Undefined,
 }
@@ -282,6 +283,12 @@ impl Interpreter {
                 (Cell::Reference(_), _) | (_, Cell::Reference(_)) => {
                     self.bind_address(a_address, b_address);
                 }
+                (Cell::Constant(a), Cell::Constant(b)) => {
+                    if a != b {
+                        self.backtrack();
+                        break;
+                    }
+                }
                 (Cell::StructureRef(a_ref), Cell::StructureRef(b_ref)) => {
                     let structure_a =
                         self.lookup_address(CellAddress::GlobalStack { index: *a_ref });
@@ -355,21 +362,6 @@ impl Interpreter {
 
         match instruction {
             // Query instructions --------------------------------------------
-            Instruction::PutStructure {
-                structure,
-                register,
-            } => {
-                self.global_stack
-                    .push(Cell::StructureRef(self.global_stack.len() + 1));
-                self.global_stack.push(Cell::Structure(*structure));
-
-                let register = Self::lookup_register_mut(
-                    &mut self.environment_stack,
-                    &mut self.registers,
-                    *register,
-                );
-                *register = Cell::StructureRef(self.global_stack.len() - 1);
-            }
             Instruction::SetVariable { register } => {
                 self.global_stack
                     .push(Cell::Reference(self.global_stack.len()));
@@ -388,6 +380,22 @@ impl Interpreter {
                     *register,
                 );
                 self.global_stack.push(register.clone());
+            }
+            Instruction::SetConstant { constant } => {
+                self.global_stack.push(Cell::Constant(*constant));
+            }
+            Instruction::PutStructure {
+                structure,
+                register,
+            } => {
+                self.global_stack.push(Cell::Structure(*structure));
+
+                let register = Self::lookup_register_mut(
+                    &mut self.environment_stack,
+                    &mut self.registers,
+                    *register,
+                );
+                *register = Cell::StructureRef(self.global_stack.len() - 1);
             }
             Instruction::PutValue {
                 value_register,
@@ -418,6 +426,14 @@ impl Interpreter {
                     &mut self.registers,
                     *variable_register,
                 ) = new_unbound;
+            }
+            Instruction::PutConstant { constant, register } => {
+                let register = Self::lookup_register_mut(
+                    &mut self.environment_stack,
+                    &mut self.registers,
+                    *register,
+                );
+                *register = Cell::Constant(*constant);
             }
 
             // Debug instructions --------------------------------------------
@@ -483,6 +499,26 @@ impl Interpreter {
                     },
                 );
             }
+            Instruction::GetConstant { constant, register } => {
+                let address = self.deref_cell(CellAddress::Register { index: *register });
+                let cell = self.lookup_address(address);
+                match cell {
+                    Cell::Reference(_) => {
+                        let constant = *constant;
+                        let cell = self.lookup_address_mut(address);
+                        *cell = Cell::Constant(constant);
+                        self.try_trail(address);
+                    }
+                    Cell::Constant(compare_constant) => {
+                        if compare_constant != constant {
+                            self.backtrack();
+                        }
+                    }
+                    _ => {
+                        self.backtrack();
+                    }
+                }
+            }
             Instruction::UnifyVariable { register } => {
                 match self.mode {
                     Mode::Read => {
@@ -523,6 +559,33 @@ impl Interpreter {
                 }
                 self.next_sub_term_address += 1;
             }
+            Instruction::UnifyConstant { constant } => match self.mode {
+                Mode::Read => {
+                    let address = self.deref_cell(CellAddress::GlobalStack {
+                        index: self.next_sub_term_address,
+                    });
+                    let cell = self.lookup_address(address);
+                    match cell {
+                        Cell::Reference(_) => {
+                            let constant = *constant;
+                            let cell = self.lookup_address_mut(address);
+                            *cell = Cell::Constant(constant);
+                            self.try_trail(address);
+                        }
+                        Cell::Constant(compare_constant) => {
+                            if compare_constant != constant {
+                                self.backtrack();
+                            }
+                        }
+                        _ => {
+                            self.backtrack();
+                        }
+                    }
+                }
+                Mode::Write => {
+                    self.global_stack.push(Cell::Constant(*constant));
+                }
+            },
             // Control flow
             Instruction::Proceed => {
                 self.instruction_index = self.proceed_return_address;
@@ -631,6 +694,9 @@ impl Interpreter {
                     index: *reference_index,
                 })
             }
+            Cell::Constant(descriptor_id) => InspectionView::Constant {
+                descriptor_id: *descriptor_id,
+            },
             Cell::Structure(descriptor_id) => {
                 let arity = self.descriptors[descriptor_id.0].arity();
 
@@ -683,6 +749,9 @@ pub enum InspectionView {
         index: usize,
     },
     Undefined,
+    Constant {
+        descriptor_id: DescriptorId,
+    },
     Structure {
         descriptor_id: DescriptorId,
         arguments: Vec<InspectionView>,

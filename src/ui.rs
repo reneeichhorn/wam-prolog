@@ -450,6 +450,9 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 fn format_inspection_view(view: &InspectionView, descriptors: &DescriptorAllocator) -> String {
     match view {
         InspectionView::Undefined => "undefined".to_string(),
+        InspectionView::Constant { descriptor_id } => {
+            format!("{}", descriptors.get(*descriptor_id).name)
+        }
         InspectionView::UnboundVariable { index } => format!("_{}", index),
         InspectionView::Structure {
             descriptor_id,
@@ -489,6 +492,9 @@ fn format_cells(cells: &[Cell], descriptors: &DescriptorAllocator) -> String {
 fn format_cell(cell: &Cell, descriptors: &DescriptorAllocator) -> String {
     match cell {
         Cell::Undefined => "undefined".to_string(),
+        Cell::Constant(struc) => {
+            format!("CON({})", descriptors.get(*struc).name)
+        }
         Cell::Reference(re) => format!("REF({})", re),
         Cell::StructureRef(struc) => format!("STR({})", struc),
         Cell::Structure(struc) => {

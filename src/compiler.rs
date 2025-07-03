@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use ratatui::symbols::line::ROUNDED_BOTTOM_LEFT;
-
 use crate::{
-    descriptor::{DescriptorAllocator, TermDescriptor},
+    descriptor::DescriptorAllocator,
     instructions::{DescriptorId, Instruction, RegisterId},
     interpreter::InspectionVariable,
     parsing::{AbstractFact, AbstractProgram, AbstractRule, AbstractTerm},
@@ -19,10 +17,17 @@ pub trait CompileTarget<'a> {
 
     fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction;
 
+    fn instruction_for_constant_argument(
+        descriptor_id: DescriptorId,
+        register: RegisterId,
+    ) -> Instruction;
+
     fn instruction_for_value_argument(argument: RegisterId, value: RegisterId) -> Instruction;
 
     fn instruction_for_variable_argument(argument: RegisterId, variable: RegisterId)
     -> Instruction;
+
+    fn instruction_for_constant(descriptor_id: DescriptorId) -> Instruction;
 
     fn instruction_for_value(register: RegisterId) -> Instruction;
 
@@ -481,8 +486,8 @@ impl Compiler {
                     ));
                     was_processed = true;
                 }
-                AbstractTerm::Constant(_) => {
-                    instructions.push(T::instruction_for_structure(
+                AbstractTerm::Constant(_) if term.level == 1 => {
+                    instructions.push(T::instruction_for_constant_argument(
                         descriptor_id,
                         register_allocation.get_register_id(term.level, term.argument_index),
                     ));
@@ -516,7 +521,10 @@ impl Compiler {
                                     sub_register_allocation.register.unwrap(),
                                 ));
                             }
-                            AbstractTerm::Structure(_, _) | AbstractTerm::Constant(_) => {
+                            AbstractTerm::Constant(_) => {
+                                instructions.push(T::instruction_for_constant(sub_descriptor_id));
+                            }
+                            AbstractTerm::Structure(_, _) => {
                                 instructions.push(T::instruction_for_sub_argument(
                                     sub_register_allocation.register.unwrap(),
                                 ));
@@ -569,12 +577,28 @@ impl<'a> CompileTarget<'a> for ProgramTarget {
         }
     }
 
+    fn instruction_for_constant_argument(
+        descriptor_id: DescriptorId,
+        register: RegisterId,
+    ) -> Instruction {
+        Instruction::GetConstant {
+            constant: descriptor_id,
+            register,
+        }
+    }
+
     fn instruction_for_value(register: RegisterId) -> Instruction {
         Instruction::UnifyValue { register }
     }
 
     fn instruction_for_variable(register: RegisterId) -> Instruction {
         Instruction::UnifyVariable { register }
+    }
+
+    fn instruction_for_constant(descriptor_id: DescriptorId) -> Instruction {
+        Instruction::UnifyConstant {
+            constant: descriptor_id,
+        }
     }
 
     fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction {
@@ -613,12 +637,28 @@ impl<'a> CompileTarget<'a> for QueryTarget {
         }
     }
 
+    fn instruction_for_constant_argument(
+        descriptor_id: DescriptorId,
+        register: RegisterId,
+    ) -> Instruction {
+        Instruction::PutConstant {
+            constant: descriptor_id,
+            register,
+        }
+    }
+
     fn instruction_for_value(register: RegisterId) -> Instruction {
         Instruction::SetValue { register }
     }
 
     fn instruction_for_variable(register: RegisterId) -> Instruction {
         Instruction::SetVariable { register }
+    }
+
+    fn instruction_for_constant(descriptor_id: DescriptorId) -> Instruction {
+        Instruction::SetConstant {
+            constant: descriptor_id,
+        }
     }
 
     fn instruction_for_structure(descriptor_id: DescriptorId, register: RegisterId) -> Instruction {
